@@ -97,18 +97,52 @@ readable and unambiguous.
 - **THEN** construction fails naming both paths
 
 ### Requirement: The framework assigns the fields it owns
-Resolution SHALL assign the active command into the runtime block, and SHALL NOT
-assign a seed: a null seed means no seed was pinned, and filling one would either
-contradict an already-computed digest or give every unseeded invocation its own
-configuration identity.
+Resolution SHALL assign only the fields the framework declares as resolved-only:
+the configuration digest and the fields fed from named hashes, plus the
+template-valued fields it renders in place.
 
-#### Scenario: Command recorded in the configuration
-- **WHEN** a configuration is resolved for a command
-- **THEN** the runtime block names that command
+It SHALL NOT assign a seed. A null seed means no seed was pinned, and filling one
+would either contradict an already-computed digest or give every unseeded
+invocation its own configuration identity.
+
+It SHALL NOT record the active command in the configuration. A configuration is
+not per-command: recording one would make the resolved configuration differ
+between two commands reading the same authored file, forking the configuration
+index and defeating the point of two invocations sharing a bundle. The command is
+an invocation fact, recorded per invocation in the manifest and reachable from
+templates through the invocation namespace.
 
 #### Scenario: Unpinned seed stays null
 - **WHEN** a configuration is resolved without a seed
 - **THEN** the seed remains null and the configuration identity is unchanged
+
+#### Scenario: Two commands over one authored configuration
+- **WHEN** a producing command and an augmenting command resolve the same authored
+  configuration with no overrides
+- **THEN** both produce the same resolved configuration and share one
+  configuration index
+
+### Requirement: The configuration digest is a framework-provided binding
+The framework's runtime block SHALL bind its configuration-digest field to a hash
+named `config_hash`, so the identities the framework ships with — a configuration
+identity, and a run directory named from it — work without a project restating the
+binding. A project SHALL therefore declare a hash under that name; failing to do
+so SHALL be refused when the command surface is validated, not when a template
+later renders.
+
+This is the one hash name the framework reserves. It is reserved because it is the
+only hash every project necessarily has: it is the identity of the configuration
+itself, not of anything in the project's domain.
+
+#### Scenario: Project declares no configuration hash
+- **WHEN** a project's hash registry declares no `config_hash`
+- **THEN** validation fails at import, naming the field and the missing hash
+
+#### Scenario: Shipped identities work unmodified
+- **WHEN** a project uses the framework runtime block as shipped and declares a
+  `config_hash`
+- **THEN** the configuration identity resolves and the manifest records it, with no
+  further declaration
 
 ### Requirement: Unmarked path guard
 The framework SHALL provide a guard enumerating path-typed fields that lack the

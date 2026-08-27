@@ -93,11 +93,20 @@ a composed one.
 
 ### Requirement: A target template may not reference a deferred value
 A command's target template SHALL NOT reference a value produced by a deferred
-hash, and this SHALL be checked when the command registry is constructed.
+hash. This SHALL be checked twice: against the committed schema default when the
+command registry is constructed, and against the template actually in force when
+the target renders. The second check is not redundant — a composed configuration
+may override the template, so the import-time check sees a string that never runs.
 
 #### Scenario: Output directory named after a byte-reading digest
 - **WHEN** a command's target template references an input-reading hash
 - **THEN** registry construction fails, naming the command and the token
+
+#### Scenario: Deferred value reached through an overridden template
+- **WHEN** a composed configuration overrides the target template with one
+  naming a field a deferred hash feeds
+- **THEN** resolution refuses before the target is rendered, rather than naming
+  the run directory after a value that is still null
 
 ### Requirement: Pure template rendering
 Template rendering SHALL be pure: the same template and values SHALL always
@@ -117,7 +126,11 @@ inside it.
 Output paths SHALL support dotted resolved-configuration tokens, an
 invocation namespace for framework-supplied tokens, registered token functions,
 and format specifications; a token referencing an unknown value or an
-unregistered function SHALL fail rather than fall back. Substituted values and
+unregistered function SHALL fail rather than fall back. A token naming a
+configuration value SHALL fail when that value is null: a present-but-null field
+is not the same as the invocation namespace, and treating it as such would let a
+function that also has a no-value form silently substitute fresh entropy for a
+value the author expected. Substituted values and
 function results SHALL be sanitized as path components except where the source
 field is path-marked or the function declares that it emits a whole path.
 
@@ -128,6 +141,11 @@ field is path-marked or the function declares that it emits a whole path.
 #### Scenario: Unknown token
 - **WHEN** a template references a value or function that does not exist
 - **THEN** rendering fails naming the token
+
+#### Scenario: Null-valued token
+- **WHEN** a template names a configuration field that exists but is null
+- **THEN** rendering fails naming the field, rather than rendering the token as
+  though no value had been supplied
 
 #### Scenario: Whole-path token
 - **WHEN** a token whose value is an absolute path is substituted
@@ -164,6 +182,11 @@ directory, including one rendered from a template, SHALL be stored unchanged and
 anchored to the output root; an output leaf SHALL be stored unchanged and anchored
 to its block's directory.
 
+A field SHALL be recognized as an output block by its base type, however the field
+is annotated — optional, unioned, or wrapped. Recognition decides which paths are
+anchored to the output root rather than absolutized against the working directory,
+so a narrower test would silently relocate an optional block's output.
+
 #### Scenario: Portable resolved configuration
 - **WHEN** a runs tree containing a resolved configuration is moved
 - **THEN** its bare-relative output paths still resolve correctly
@@ -172,6 +195,12 @@ to its block's directory.
 - **WHEN** a directory is authored beginning with a working-directory-relative
   prefix
 - **THEN** it is stored absolute, so no stored relative value is ambiguous
+
+#### Scenario: Optionally-typed output block
+- **WHEN** an output block field is annotated as optional rather than as a bare
+  block type
+- **THEN** its directory is still anchored to the output root, not absolutized
+  against the working directory
 
 ### Requirement: Two views of one resolved configuration
 Resolution SHALL return both a portable view, as persisted, and an absolute view
@@ -240,6 +269,12 @@ restarted, whereas a step wrongly continued produces a visible wrong result.
 - **WHEN** a step declared to restart is resumed
 - **THEN** its declared scope is cleared before it runs again, without a further
   override
+
+#### Scenario: A restarting step's scope is still confined
+- **WHEN** a restarting step's declared scope resolves outside the command's
+  containment root
+- **THEN** clearing is refused, because every path the framework clears is
+  containment-checked regardless of which mechanism clears it
 
 #### Scenario: Progress and artifacts are readable on resume
 - **WHEN** a resumed step needs to know where it stopped
