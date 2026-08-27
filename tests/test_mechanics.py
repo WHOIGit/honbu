@@ -760,27 +760,28 @@ def test_a_fanned_hash_cannot_feed_an_identity_field():
 
 
 # --------------------------------------------------------------------------- #
-# the one reserved hash name
+# the framework reserves no hash name (D21)
 # --------------------------------------------------------------------------- #
 
 
-def test_the_framework_runtime_block_binds_the_configuration_digest():
-    """Shipped defaults have to work as shipped.
+def test_the_framework_binds_no_hash_of_its_own_accord():
+    """No shipped default may reference a field the framework does not guarantee.
 
-    `config_id` defaults to a template over `config_hash`, so if the base block did
-    not bind that field a project using the block unmodified would either get a
-    null-valued template (a refusal) or, before that refusal existed, a run
-    directory named from entropy.
+    An earlier version defaulted `config_id` to a template over `config_hash` and
+    bound `config_hash` to a reserved declaration to make that default work — which
+    made declaring a hash mandatory, contradicting "identities are declared, not
+    inferred". Both halves are gone: no binding, and a null default.
     """
-    from honbu.mechanics.blocks import CONFIG_HASH_NAME, RuntimeConfig
+    from honbu.mechanics.blocks import RuntimeConfig
     from honbu.mechanics.markers import identity_bindings
 
-    bindings = dict(identity_bindings(RuntimeConfig))
-    assert bindings[("config_hash",)] == CONFIG_HASH_NAME
+    assert identity_bindings(RuntimeConfig) == ()
+    assert RuntimeConfig.model_fields["config_id"].default is None
+    assert RuntimeConfig().config_hash is None
 
 
-def test_a_project_declaring_no_configuration_hash_is_refused():
-    """At import, naming the field — not later, when a template finds it null."""
+def test_a_project_declaring_no_hashes_is_valid():
+    """A project that hashes nothing is a project, not a misconfiguration."""
     from pathlib import Path
 
     from pydantic import Field
@@ -793,5 +794,32 @@ def test_a_project_declaring_no_configuration_hash_is_refused():
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
         output_root: PortablePath = Path("./runs")
 
-    with pytest.raises(DeclarationError, match="one hash name the framework reserves"):
-        validate_identity_fields(Root, HashRegistry([]))
+    assert validate_identity_fields(Root, HashRegistry([])) == ()
+
+
+def test_binding_a_configuration_identity_is_two_lines():
+    """The opt-in the adoption guide leads with, exercised as documentation."""
+    from pathlib import Path
+    from typing import Annotated
+
+    from pydantic import Field
+
+    from honbu.mechanics.blocks import CONFIG_HASH_NAME, ExperimentConfig, RuntimeConfig
+    from honbu.mechanics.markers import (
+        FromHash,
+        PortablePath,
+        ResolvedString,
+        TemplatedIdentity,
+    )
+
+    class Runtime(RuntimeConfig):
+        config_hash: Annotated[ResolvedString, FromHash(CONFIG_HASH_NAME)] = None
+        config_id: TemplatedIdentity | None = "{runtime.config_hash:coolname}"
+
+    class Root(StrictModel):
+        experiment: ExperimentConfig
+        runtime: Runtime = Field(default_factory=Runtime)
+        output_root: PortablePath = Path("./runs")
+
+    registry = HashRegistry([FieldHash(name=CONFIG_HASH_NAME, include=["experiment"])])
+    assert validate_identity_fields(Root, registry) == ((("runtime", "config_hash"), "config_hash"),)

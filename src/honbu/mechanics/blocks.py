@@ -24,15 +24,15 @@ from pydantic import BaseModel
 from honbu.errors import DeclarationError
 from honbu.mechanics.markers import (
     IDENTITY,
-    FromHash,
     PortablePath,
     ResolvedString,
     TemplatedIdentity,
 )
 from honbu.mechanics.model import StrictModel
 
-#: The one hash name the framework reserves. Named here so a project's declaration
-#: and the framework's binding cannot drift apart as two string literals.
+#: The conventional name for a whole-configuration digest — a convention, not a
+#: reservation. Honbu neither requires the declaration nor binds it; the name exists
+#: so the adoption guide and the projects spell it the same way.
 CONFIG_HASH_NAME = "config_hash"
 
 
@@ -54,20 +54,32 @@ class RuntimeConfig(StrictModel):
     ``run_id`` and ``config_id`` hold templates rendered in place, so the run
     directory can reference them. ``run_id`` defaults to a fresh identity per
     invocation, so two runs of one configuration do not collide even when the output
-    template carries no timestamp; ``config_id`` defaults to a stable name for the
-    configuration, so reruns of one configuration land together. Either can be set
-    to a literal, or ``config_id`` to null to opt out.
+    template carries no timestamp.
 
-    ``config_hash`` is bound to a hash named ``config_hash`` — the one hash name the
-    framework reserves, because it is the only one every project necessarily has: the
-    identity of the configuration itself rather than of anything in the project's
-    domain. Reserving it is what makes the defaults above work as shipped rather than
-    obliging every project to restate the binding to get a ``config_id``. A project
-    declaring no such hash is refused when its command surface is validated, at
-    import, rather than when a template later finds the field null.
+    ``config_id`` defaults to **null**, and ``config_hash`` carries **no** binding to
+    any hash. Honbu reserves no hash name and binds nothing of its own accord: a
+    project that declares no hashes at all is a valid project, and no shipped default
+    may reference a field the framework does not itself guarantee. An earlier version
+    defaulted ``config_id`` to ``"{runtime.config_hash:coolname}"`` and bound
+    ``config_hash`` to a reserved declaration to make that default work — which made
+    declaring a hash mandatory and contradicted the rule that identities are declared
+    rather than inferred.
 
-    Three of these fields are declared identities and so appear in the run manifest;
-    the digests do not, because not every hash warrants an identity.
+    So a hash-derived configuration identity is opt-in, and it is two lines::
+
+        class Runtime(RuntimeConfig):
+            config_hash: Annotated[ResolvedString, FromHash(CONFIG_HASH_NAME)] = None
+            config_id: TemplatedIdentity | None = "{runtime.config_hash:coolname}"
+
+    Nearly every project wants them. Without a configuration-derived component, an
+    output template reaches for ``run_id`` or ``{:timestamp}``, both fresh per
+    invocation — and a run directory named from fresh entropy cannot be re-found by a
+    later ``--resume``. That is boilerplate the adoption guide leads with rather than
+    something enforced here. ``config_id`` may equally bind to a per-command digest,
+    which is often the more useful identity.
+
+    The identity-marked fields appear in the run manifest; the digests do not, because
+    not every hash warrants an identity.
 
     There is deliberately no ``command`` field. A configuration is not per-command:
     putting the active command in it makes the resolved configuration differ between
@@ -80,8 +92,8 @@ class RuntimeConfig(StrictModel):
 
     seed: int | None = None
     run_id: TemplatedIdentity = "{:coolname}"
-    config_id: TemplatedIdentity | None = "{runtime.config_hash:coolname}"
-    config_hash: Annotated[ResolvedString, FromHash(CONFIG_HASH_NAME)] = None
+    config_id: TemplatedIdentity | None = None
+    config_hash: ResolvedString = None
     sweep_id: Annotated[str | None, IDENTITY] = None
 
 

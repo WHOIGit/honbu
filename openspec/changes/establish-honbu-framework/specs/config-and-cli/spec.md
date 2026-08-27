@@ -1,5 +1,33 @@
 ## ADDED Requirements
 
+### Requirement: Composition is a core capability, not an extra
+The compositor SHALL be a core dependency, so every install can compose, persist
+and run without selecting an extra, and no code path SHALL exist whose only purpose
+is to report a missing optional dependency at invocation time.
+
+Layers SHALL remain boundaries of *import* rather than of installation: a project
+opts out of a capability by not importing it. Because installation no longer
+enforces the boundary, the framework SHALL assert it instead — no module in the
+mechanics layer SHALL import the compositor, its configuration library, or a YAML
+implementation, and this SHALL be verified by test rather than by convention.
+
+Genuine execution backends — job submitters, hyperparameter search engines — SHALL
+remain optional dependencies, because they are substitutable infrastructure the
+framework adapts to rather than capabilities it implements.
+
+#### Scenario: Fresh install composes
+- **WHEN** the framework is installed with no extras selected
+- **THEN** composition, resolution, persistence and the run lifecycle all work
+
+#### Scenario: Mechanics stay independent of the compositor
+- **WHEN** a mechanics-layer module is checked for its imports
+- **THEN** it imports no compositor, configuration library, or YAML implementation
+
+#### Scenario: A launcher is absent
+- **WHEN** a project requests an execution backend whose package is not installed
+- **THEN** it is refused naming the extra to install, because that backend is
+  genuinely optional
+
 ### Requirement: Hydra composition with defined precedence
 The framework SHALL compose configuration through the Hydra Compose API with a
 defined search order — repeatable explicit directories, then a project-local
@@ -108,6 +136,35 @@ SHALL NOT assign configuration fields.
 #### Scenario: Positional arity
 - **WHEN** a required positional is missing or an extra bare token is supplied
 - **THEN** the invocation fails naming the command's declared positionals
+
+### Requirement: A bare top-level comma in an override is refused
+An override SHALL be refused when the compositor's grammar reads its value as a
+multi-value sweep — a comma sitting directly in the value rather than inside a
+collection literal or a quoted string — naming the sweep block as the place axes
+are declared. The framework SHALL NOT run compositor multirun.
+
+The two spellings differ by one character and mean opposite things: a bare comma
+requests one run per listed value, while a bracketed list is a single list-valued
+setting. Silently accepting the first would either discard every value but one or
+smuggle in an execution model the framework does not own.
+
+Commas that are structurally part of a value SHALL compose normally — collection
+literals, mapping literals, and quoted strings all contain commas that are not
+top-level.
+
+#### Scenario: Bare comma on an ordinary path
+- **WHEN** an override supplies a bare comma-separated value for a configuration
+  field
+- **THEN** it is refused, naming the field and directing the caller to the sweep
+  block
+
+#### Scenario: List value composes
+- **WHEN** an override supplies a bracketed list for a list-valued field
+- **THEN** it composes as a single value
+
+#### Scenario: Comma inside a quoted string
+- **WHEN** an override supplies a quoted value containing a comma
+- **THEN** it composes as one string
 
 ### Requirement: Installed command surface
 The framework SHALL provide a command harness a project registers its

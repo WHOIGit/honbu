@@ -42,15 +42,15 @@ design's single load-bearing assumption; everything below assumes it.
 
 ### D1 — Layered spine + organs; the project holds the loop
 
-Three layers, each opt-in below the first:
+Three layers, each opt-in by *import* — see D20, which flattened the install:
 
 ```
   L3  CAPABILITIES   sweeps · run-comparison · ensemble-assessment ·
-      (opt-in)       inspect scaffolding
+                     inspect scaffolding
   L2  FLOW           compose→resolve→collide→persist→work→complete ·
-      (opt-in)       CLI dash-grammar · provenance bundle · run manifest
+                     CLI dash-grammar · provenance bundle · run manifest
   L1  MECHANICS      canonical JSON · hash_source · IDs · strict-model base ·
-      (always)       markers + walkers · atomic writes · template rendering ·
+                     markers + walkers · atomic writes · template rendering ·
                      collision validation
   organs plug at every layer: schema blocks · command→active-blocks map ·
   work functions · domain hashes · output topology · backends
@@ -62,6 +62,11 @@ than one domain cannot dictate the flow; the escape hatch must be "don't call
 that part," not "fight the frame." **Placement rule:** if duplicating a mechanism
 caused drift, it is L1 and non-negotiable (canonical JSON, the `version`
 convention, marker exclusion).
+
+**The numbering is a dependency ordering, not a stack of altitudes.** Composition
+and identity, in particular, are *siblings*: neither imports the other, and the
+first thing needing both is resolution. A reader who takes L2 as "above" L1
+conceptually will look for a coupling that is not there.
 
 ### D2 — Schema composition: project assembles from framework block *types*
 
@@ -175,10 +180,15 @@ read-only inspection resolve everything else.
 
 A sweep declares a base config, axes (config path + values), a strategy, an
 output template, and an objective (a metric key + direction). The framework
-expands the axes, composes/resolves each child, assigns child identities, runs
-each through the L2 lifecycle calling the project's work function, writes a sweep
-manifest, collects canonical metrics, and groups by configuration identity —
-without knowing what the work function trains. N-way config comparison and a
+expands the axes, composes/resolves each child, assigns child identities, writes a
+sweep index, and — as children complete — collects canonical metrics and groups by
+configuration identity, without knowing what the work function trains.
+
+Amended by D22 and D23: expansion and execution are two commands, not one call.
+Preparation resolves and materializes every child but runs nothing; execution is a
+resumable loop over the index. So the framework does not "run each through the
+lifecycle" in one pass — a sweep that could only be run to completion in a single
+process is the thing D23 exists to avoid. N-way config comparison and a
 sweep's per-axis rollup are the *same* operation, so sweeps and comparison are one
 engine with two entry points (axes known vs. discovered). Ensemble assessment is
 the same shape: a stricter gate set, a project-supplied combine work function, and
@@ -617,6 +627,134 @@ One consequence worth stating: a refusal and a defect exit differently. A
 traceback. Anything else is a bug in Honbu or the project, so its traceback
 survives — swallowing it would trade a diagnosable crash for a mystery.
 
+### D20 — One install; the layers are import boundaries, not extras
+
+Hydra, OmegaConf and PyYAML move into the core dependencies. `pip install honbu`
+gives every layer, and a project opts out of a capability by not importing it.
+
+The extras were justified by dependency weight, and that justification was real:
+`hydra-core` → `omegaconf` → `antlr4-python3-runtime==4.9.*`, an exact pin on a
+2021 release that every consumer now inherits. **This is the accepted cost**, and
+it is the one thing that could force the decision back: a project needing antlr
+4.10+ for something else has no resolution. Accepted because the alternative is
+worse in a way that shows up on everyone's first command rather than in one
+environment's dependency solve — three lazy-import branches that exist only to
+say "install the flow extra", firing during someone's first invocation, plus an
+extras matrix (`[flow]` vs `[compose]` vs `[run]`) presented at adoption time to
+exactly the person least equipped to choose.
+
+Two things this gives up, one of which is bought back:
+
+*Structural enforcement of the layering.* It was previously **impossible** for
+`mechanics/` to import a composition primitive, because the package was not
+installed. That is now convention. It is bought back with a test asserting that no
+module under `mechanics/` imports hydra, omegaconf or yaml — cheap, and treated as
+non-optional, because "two modules that should be independent quietly grow a
+dependency" is the drift Honbu exists to remove.
+
+*The zero-dependency mechanics case.* A project wanting only the canonical encoder
+and the markers now installs antlr to get them. Not bought back; judged not worth
+an extras matrix.
+
+Genuine launchers stay optional, because they are not capabilities Honbu
+implements: `submitit`, `optuna` and anything Slurm-shaped are extras. See D22 for
+why they are used as libraries rather than as Hydra plugins.
+
+### D21 — The configuration identity is optional and project-bound
+
+`runtime.config_hash` carries no framework-supplied hash binding, and
+`runtime.config_id` defaults to null. A project that wants a hash-derived
+configuration identity declares the hash and binds the field; a project that wants
+none omits both, and neither the run lifecycle nor the manifest requires them.
+
+This reverses a decision taken and reverted inside one review pass, which is worth
+recording rather than quietly overwriting. The base block briefly bound
+`config_hash` to a reserved hash name, because `config_id` defaulted to a template
+over it and that default was otherwise unusable — it silently minted entropy until
+the null-token refusal exposed it. Binding fixed the default but made declaring a
+hash *mandatory*, which contradicts a requirement written twenty lines earlier:
+"the framework SHALL NOT infer identities from hashes: not every hash warrants an
+identity, and not every identity derives from a hash." Defaulting `config_id` to
+null resolves both — the shipped block has no identity behavior and no landmine.
+
+The cost is real and is accepted as documentation rather than mechanism. Without
+`config_id`, a project's first output template reaches for `runtime.run_id` or
+`{:timestamp}`, both fresh per invocation, and a run directory named from fresh
+entropy cannot be re-found by a later `--resume`. Every project therefore wants a
+configuration-derived component in its run directory, and that is boilerplate the
+adoption guide leads with rather than something the framework enforces.
+
+`config_hash` remains the *conventional* name, and comparison takes the identity
+name as a parameter rather than assuming it.
+
+### D22 — Honbu expands sweeps itself, over Hydra's parser, never over multirun
+
+Sweep expansion is Honbu's. It reuses exactly one piece of Hydra — the
+`OverridesParser`, standalone, with no `ConfigLoader` and no Hydra run — and none
+of the multirun machinery.
+
+The reason is not the output-directory conflict, which is smaller than it looks
+(`hydra.sweep.dir` and `hydra.sweep.subdir` are configurable and `hydra.job.chdir`
+has defaulted to false since 1.2). It is that **multirun holds its progress in
+memory**. `BasicSweeper.sweep` keeps position in `self.overrides` and
+`self.batch_index` under `while not self.is_done()`, and the only thing it writes
+to the sweep directory is `multirun.yaml` — the configuration, not the position.
+Killed at child 7 of 12, a re-run starts at child 0 and retrains the seven that
+finished. There is no hook that fixes this from outside, because there is nowhere
+to read "where was I" from. For a sweep that must be stoppable and resumable
+(D23), that is the whole requirement, not a gap around the edges.
+
+The plugin ecosystem is not the loss it appears to be, because **the capability is
+in the library, not in the plugin.** `submitit` and `optuna` are independent
+packages; `hydra-submitit-launcher` is an adapter translating a `hydra:` node into
+`submitit.AutoExecutor` parameters. Honbu translates its own sweep block instead,
+which is less code, not more. And driving a Hydra `Launcher` directly is
+ill-advised on its own terms: `Launcher.setup` demands a live `HydraContext` and a
+`DictConfig` carrying a `hydra:` node, and the submitit launcher pickles the task
+function and re-enters `hydra.core.utils.run_job` on the worker — smuggling a
+Honbu run through Hydra's idea of a job, with two frameworks claiming to own what
+a run is.
+
+Optuna additionally cannot be used through its plugin at all: the sweeper reads
+the task function's **return value** as the objective, and a Honbu work function
+returns `None` by design (D14). Used directly, Optuna's ask/tell API separates
+proposing parameters from running the job and its RDB storage makes the study
+resumable — so the objective is read from a child's recorded `best.metrics` and
+survives the driver process dying, which the plugin's version does not.
+
+Consequently Honbu refuses a **bare top-level comma** on an ordinary
+configuration override. In Hydra's grammar `epochs=10,20` is a multirun sweep, and
+it is one character away from `epochs=[10,20]`, a list value, while meaning
+something entirely different. Axes come only from the sweep block; the refusal
+names it.
+
+### D23 — A sweep's state is derived from its children's manifests
+
+The sweep directory holds an **immutable index** of prepared children. It holds no
+progress. A child's state is its own `manifest.json`, and the sweep's state is the
+aggregate — so the driver holds nothing, and killing it loses nothing.
+
+Preparation materializes every child up front: expand the matrix, resolve each
+combination, check the gate, then write each child's run directory in the
+`initialized` state without running anything. Execution is then a loop over the
+index, and it needs no new vocabulary because Honbu's existing resumable set is
+already exactly right: `initialized`, `running`, `interrupted` and `failed` are
+resumed, `completed` is skipped. `running` being resumable is what covers a Slurm
+timeout, where SIGTERM does not raise and the child is left mid-flight.
+
+Two consequences worth stating. Every child is reachable by
+`--resolved <child> --resume` — one uniform call, whether it never started or died
+at epoch 40 — which is why the driver can be a `for` loop and why a Slurm array
+over the child directories needs no Python glue at all. And a sweep is pausable at
+any granularity the project likes, including "stop after this child, I need the
+GPU", with no cooperation from the sweep engine.
+
+A second writer is deliberately avoided: nothing but the child writes the child's
+manifest, so the index and the states cannot disagree. This also settles run
+discovery for sweeps — the index names its children and reporting never scans
+directories, which is what keeps a half-deleted run from silently vanishing from a
+report.
+
 ## Risks / Trade-offs
 
 - [Adoption is a real refactor for two working codebases] → Accepted; a big-bang
@@ -641,12 +779,10 @@ survives — swallowing it would trade a diagnosable crash for a mystery.
   first release is extracted from one project's current modules or written fresh
   against both.
 - How far the inspect/reporting scaffolding is shared vs. left per-project.
-- Run discovery: comparison operates over "a set of runs" with no definition of
-  how a run is located or loaded. D14 fixes the manifest's shape and location,
-  which is the substrate discovery will read, but not the discovery itself.
-- Composition (the compose stage): whether Honbu owns the Hydra call and thereby
-  dictates config-group layout, and how the three mutually exclusive roots
-  interact with `--continue-from`.
+- Run discovery for *ad-hoc* comparison: comparing an arbitrary set of runs still
+  has no definition of how they are located. D23 answers it for sweeps — the sweep
+  index names its children, and nothing scans directories — but a user comparing
+  two unrelated runs has only "a set of paths".
 - Content-addressed output — naming a directory after a digest of what you are
   about to write — needs stage-then-commit, i.e. two targets for one command.
   Deliberately out of scope; a command has one target.

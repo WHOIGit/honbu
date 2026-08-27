@@ -5,6 +5,11 @@ downstream — validation, identities, templates, paths — is the resolver's, w
 never sees argv and never reads a configuration file. That boundary is what makes
 the resolver usable on a dict you built in a notebook.
 
+Hydra is a core dependency (D20), so it is imported at module scope like anything
+else. It used to be imported lazily inside :func:`compose_config` to keep this
+module importable without the ``flow`` extra; that extra is gone, and with it the
+branch whose only job was to tell someone mid-command to go install something.
+
 Honbu makes the Hydra call because ``config_loader/compositor.py`` is one of the
 modules that drifted in both projects, and the drift-prone part is precisely the
 part duplicated here: assembling ``hydra.searchpath`` with a defined precedence.
@@ -27,6 +32,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
+
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 
 from honbu.errors import RefusalError
 
@@ -338,20 +346,8 @@ def compose_config(
     extra_dirs: Sequence[Path | str] = (),
     cwd: Path | None = None,
 ) -> dict[str, Any]:
-    """Compose the default root into a plain dict.
-
-    Hydra is imported here rather than at module scope: it lives in the ``flow``
-    extra, so a project taking only the mechanics never installs it, and importing
-    this module must not require it.
-    """
+    """Compose the default root into a plain dict."""
     search = build_search_path(spec, extra_dirs, cwd=cwd)
-    try:
-        from hydra import compose, initialize_config_dir
-        from omegaconf import OmegaConf
-    except ModuleNotFoundError:  # pragma: no cover - depends on the flow extra
-        raise RefusalError(
-            "composition needs the 'flow' extra: pip install 'honbu[flow]'"
-        ) from None
 
     primary = next(
         (path for path in search if (path / f"{spec.config_name}.yaml").is_file()), None

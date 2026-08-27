@@ -28,6 +28,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from honbu.errors import RefusalError
 from honbu.flow.commands import CommandSpec
 from honbu.flow.manifest import Manifest
@@ -35,7 +37,6 @@ from honbu.flow.resolve import Resolution, anchor
 from honbu.mechanics.blocks import OutputBlock, OutputLeaf
 from honbu.mechanics.canonical import canonical_bytes, hash_source
 from honbu.mechanics.hashes import (
-    HASHES_DIRNAME,
     HashEntry,
     HashRegistry,
     write_hash_entries,
@@ -62,12 +63,6 @@ def _dump_yaml(payload: Mapping[str, Any]) -> str:
     comparable, this one to make a file readable. ``sort_keys=False`` keeps blocks
     in schema order rather than alphabetized.
     """
-    try:
-        import yaml
-    except ModuleNotFoundError:  # pragma: no cover - depends on the flow extra
-        raise RefusalError(
-            "persisting a configuration needs the 'flow' extra: pip install 'honbu[flow]'"
-        ) from None
     return yaml.safe_dump(dict(payload), sort_keys=False, default_flow_style=False)
 
 

@@ -5,6 +5,12 @@ The placement rule: if duplicating a mechanism caused drift between the sibling
 projects, it lives here and is not negotiable. That is why the canonical encoder,
 the marker system, and the identity plumbing are in this layer rather than being
 recommended practice.
+
+Nothing here may import Hydra, OmegaConf or YAML. Installation used to guarantee
+that, because those lived in an extra this layer's users never selected; since D20
+put them in the core, ``test_layering`` guarantees it instead. The rule is not
+aesthetic — the whole claim of this layer is that it is usable on a dict you built
+by hand, and one convenience import would quietly end that.
 """
 
 from honbu.mechanics.blocks import (

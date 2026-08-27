@@ -65,9 +65,31 @@
 
 ## 4. L3 — Capabilities
 
-- [ ] 4.1 Sweep engine (axis expansion, strategy, child resolution + lifecycle,
-  sweep manifest written by the parent, group-by identity, skip invalid
-  combinations).
+- [ ] 4.0 Flatten the install and reverse the reserved hash name (D20, D21):
+  compositor, config library and YAML into core dependencies; delete the three
+  "install the extra" refusal branches; add the layering guard test asserting no
+  mechanics module imports them; drop the `FromHash` binding from the base runtime
+  block and default the configuration-identity field to null; add
+  `submitit`/`optuna` extras.
+- [ ] 4.1 Sweep block and expansion (D22): the open axis mapping in the root
+  schema, flat-and-nested key normalization recorded per child, cartesian and
+  paired axes, the bare-top-level-comma refusal pointing at the block, and the
+  sweep-definition digest under the standard exclusions.
+- [ ] 4.1a The child-distinguishing gate: declared identifier, stability
+  verification by resolving under two invocation contexts, the
+  must-appear-in-the-output-template rule, and a refusal naming colliding children
+  and the axes that failed to separate them.
+- [ ] 4.1b Preparation and the sweep directory: materialize every child in the
+  initialized state running nothing, strip the sweep block from each child so its
+  digests match a hand-run configuration, idempotent re-preparation, the sweep
+  output block with its `config/` holding the immutable index, and a producing
+  command's refusal of an active sweep block.
+- [ ] 4.1c Execution and status derived from the children's manifests: skip
+  completed, resume every resumable state, no sweep-level progress record, uniform
+  `--resolved <child> --resume` invocation, and stop/resume verified by test.
+- [ ] 4.1d Optional execution adapters: local sequential needing no extra, a job
+  submitter, and a search-driven sweeper reading its objective from a child's
+  recorded best metrics rather than a work-function return value.
 - [ ] 4.2 Comparison engine (operation-declared gates, N-way residual diff,
   objective rank) sharing the sweep rollup.
 - [ ] 4.3 Version-aware reconciliation (per-hash recipe gating, resolved-tree

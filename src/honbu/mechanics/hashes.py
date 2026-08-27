@@ -41,7 +41,6 @@ from honbu.mechanics.canonical import (
     hash_source,
 )
 from honbu.mechanics.io import atomic_write_json, read_json
-from honbu.mechanics.blocks import CONFIG_HASH_NAME
 from honbu.mechanics.markers import (
     excluded_source_paths,
     identity_bindings,
@@ -400,16 +399,10 @@ def validate_identity_fields(
     for path, hash_name in bindings:
         dotted_path = ".".join(path)
         if hash_name not in known:
-            hint = (
-                f" {hash_name!r} is the one hash name the framework reserves: it is the "
-                "identity of the configuration itself, so every project declares one."
-                if hash_name == CONFIG_HASH_NAME
-                else ""
-            )
             raise DeclarationError(
                 f"{root_type.__name__}.{dotted_path} declares FromHash({hash_name!r}), "
                 f"which no hash declares; declared: "
-                f"{', '.join(sorted(known)) or '(none)'}.{hint}"
+                f"{', '.join(sorted(known)) or '(none)'}"
             )
         if hash_name in registry.fanned_names:
             raise DeclarationError(

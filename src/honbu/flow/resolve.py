@@ -230,18 +230,28 @@ def _phase2_input_paths(config: BaseModel, *, cwd: Path, skip: frozenset[str]) -
 
 
 def _phase4_identities(
-    config: BaseModel, entries: Mapping[str, HashEntry]
+    config: BaseModel,
+    entries: Mapping[str, HashEntry],
+    deferred: Sequence[str] = (),
 ) -> tuple[str, ...]:
     """Copy each computed digest into the field that declared it.
 
-    Returns the dotted paths left unassigned because their hash was deferred — the
-    set a target template may not reference.
+    Returns the dotted paths left unassigned *because their hash was deferred* —
+    the set a target template may not reference.
+
+    Deliberately not every unassigned path. A field naming a hash nobody declared
+    is also unassigned, and reporting it as deferred would be a misleading message
+    for a different mistake: that one is refused at import by
+    ``validate_identity_fields``, with the null-token refusal as the backstop if a
+    caller drives the resolver directly with a mismatched registry.
     """
+    postponed = set(deferred)
     unassigned: list[str] = []
     for path, hash_name in identity_bindings(type(config)):
         entry = entries.get(hash_name)
         if entry is None:
-            unassigned.append(".".join(path))
+            if hash_name in postponed:
+                unassigned.append(".".join(path))
             continue
         _set_path(config, path, entry.value)
     return tuple(unassigned)
@@ -477,7 +487,7 @@ def resolve(
     )
 
     # 4 — identities into their declared fields
-    unassigned = _phase4_identities(config, result.entries)
+    unassigned = _phase4_identities(config, result.entries, result.deferred)
 
     # 5 — template-valued fields, so the target may reference them
     warnings.extend(

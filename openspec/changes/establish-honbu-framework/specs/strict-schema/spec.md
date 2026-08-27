@@ -122,27 +122,38 @@ templates through the invocation namespace.
 - **THEN** both produce the same resolved configuration and share one
   configuration index
 
-### Requirement: The configuration digest is a framework-provided binding
-The framework's runtime block SHALL bind its configuration-digest field to a hash
-named `config_hash`, so the identities the framework ships with — a configuration
-identity, and a run directory named from it — work without a project restating the
-binding. A project SHALL therefore declare a hash under that name; failing to do
-so SHALL be refused when the command surface is validated, not when a template
-later renders.
+### Requirement: The configuration identity is optional and project-bound
+The framework SHALL reserve no hash name and SHALL bind no hash to a field of its
+own accord. The runtime block's configuration-digest field SHALL carry no
+framework-supplied binding, and the configuration-identity field SHALL default to
+null, so that a project declaring no hashes at all is a valid project and the
+shipped block carries no identity behavior it cannot satisfy.
 
-This is the one hash name the framework reserves. It is reserved because it is the
-only hash every project necessarily has: it is the identity of the configuration
-itself, not of anything in the project's domain.
+A project wanting a hash-derived configuration identity SHALL declare the hash and
+bind the field, and MAY bind it to any declared hash — a per-command digest rather
+than a whole-configuration one is a legitimate and often better choice. `config_hash`
+SHALL be documented as the conventional name without being enforced, and any
+operation that ranks or gates on a configuration identity SHALL take the identity's
+name as a parameter rather than assuming it.
 
-#### Scenario: Project declares no configuration hash
-- **WHEN** a project's hash registry declares no `config_hash`
-- **THEN** validation fails at import, naming the field and the missing hash
+No shipped default SHALL reference a field the framework does not itself guarantee.
 
-#### Scenario: Shipped identities work unmodified
-- **WHEN** a project uses the framework runtime block as shipped and declares a
-  `config_hash`
-- **THEN** the configuration identity resolves and the manifest records it, with no
-  further declaration
+#### Scenario: A project that hashes nothing
+- **WHEN** a project declares an empty hash registry and uses the framework runtime
+  block unmodified
+- **THEN** its commands resolve, run, and record normally, with no configuration
+  identity in the manifest
+
+#### Scenario: Project binds its own configuration identity
+- **WHEN** a project declares a hash and binds the configuration-digest field to it
+- **THEN** the digest is assigned and the identity is recorded, with no further
+  declaration
+
+#### Scenario: No default names an ungiven field
+- **WHEN** the shipped runtime block is resolved for a command that computes no
+  hashes
+- **THEN** no template refuses, because no shipped default references the
+  configuration digest
 
 ### Requirement: Unmarked path guard
 The framework SHALL provide a guard enumerating path-typed fields that lack the

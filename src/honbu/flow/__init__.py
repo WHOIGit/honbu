@@ -1,9 +1,10 @@
 """L2 — the flow: composition, declared commands, and the run record.
 
-Opt-in. A project that wants only the mechanics never imports this package, which
-is also why L2's dependencies live in the ``flow`` extra rather than the core: L1
-cannot accidentally reach a composition primitive. Hydra is imported lazily inside
-:func:`compose_config`, so this package stays importable without it.
+A project that wants only the mechanics never imports this package. That used to be
+enforced by packaging — L2's dependencies lived in a ``flow`` extra, so ``mechanics``
+*could not* reach a composition primitive even by accident. The extra is gone (D20),
+so the boundary is now asserted by a test instead: no module under ``mechanics``
+imports Hydra, OmegaConf or YAML.
 
 The boundary that matters: composition ends at a plain dict. Everything after —
 validation, identities, templates, paths — belongs to the resolver, which never

@@ -19,15 +19,23 @@ foundation stays canonical by construction instead of by manual correction.
   on to define its subcommands, configuration composition, strict schemas,
   content identities, and output/run-artifact lifecycle — while the project
   keeps its own domain commands, schemas, backends, and results.
-- Provide a **layered spine** a project adopts at whatever depth fits:
-  - **Mechanics** (always): canonical JSON, `hash_source`, deterministic
+- Provide a **layered spine** a project adopts at whatever depth fits. One
+  install carries every layer; a project opts out of a layer by not importing it,
+  and only genuine execution backends are optional dependencies.
+  - **Mechanics**: canonical JSON, `hash_source`, deterministic
     human IDs, the strict-model base and field markers, marker walkers, atomic
     writes, output-path template rendering, collision validation.
-  - **Flow** (opt-in): the `compose → resolve → collision-check → persist →
+  - **Flow**: the `compose → resolve → collision-check → persist →
     work → complete` command lifecycle, the dash-rule CLI grammar, the config
     provenance bundle, and the run manifest.
-  - **Capabilities** (opt-in): parameter sweeps, run comparison, and ensemble
+  - **Capabilities**: parameter sweeps, run comparison, and ensemble
     assessment — built once on the mechanics/flow and shared by every project.
+  - Composition and identity are **siblings** within this ordering, not stacked:
+    neither depends on the other, and resolution is the first thing needing both.
+- Make **sweeps stoppable**: preparation resolves and materializes every child
+  run without performing work, and execution is a resumable loop whose only state
+  is the children's own manifests — so a sweep survives a Ctrl-C, a scheduler
+  timeout, or "I need the GPU for something else."
 - Keep the project **in control**: the project holds the main loop and calls
   into the framework; the framework never inverts control. A project uses the
   depth it wants and hand-rolls the rest without fighting the framework.
@@ -83,9 +91,14 @@ to model it.
   resolution phase order, output-path templating and portable path resolution,
   scope-confined collision safety and resume, declared steps, the config
   provenance bundle, and the live run manifest with its invocation log.
-- `sweeps-and-comparison`: parameter sweeps, N-way run comparison, and ensemble
-  assessment — one gate/diff/rank engine over the shared identity family, with
-  the version-aware reconciliation model.
+- `sweeps-and-comparison`: config-defined sweeps expanded by Honbu over the
+  compositor's override parser rather than its multirun machinery — cartesian and
+  paired axes, a declared child-distinguishing gate checked before anything is
+  written, children indistinguishable from hand-run configurations, an immutable
+  sweep index with its own output block, and sweep state derived from the
+  children's manifests so execution is stoppable and resumable. Plus N-way run
+  comparison and ensemble assessment — one gate/diff/rank engine over the shared
+  identity family, with the version-aware reconciliation model.
 
 ### Modified Capabilities
 
@@ -93,7 +106,10 @@ to model it.
 
 ## Impact
 
-- New repository `honbu` with the layered package above.
+- New repository `honbu` with the layered package above. Core dependencies carry
+  the compositor, so every install can compose, persist and run; the accepted cost
+  is an inherited exact pin on the compositor's parser runtime. Job submitters and
+  hyperparameter search engines stay optional.
 - Downstream: `sati` and `dojo` adopt Honbu as a dependency and re-express their
   `config_loader`, schema base, hashing, and lifecycle modules in terms of it,
   keeping only their domain blocks, commands, backends, and results. Adoption

@@ -349,30 +349,29 @@ def test_a_null_valued_token_is_refused_rather_than_minting_entropy(tmp_path):
     configuration produced two randomly-named run directories.
     """
 
-    class Templated(TrainingOutputs):
-        dir_template: str | None = "{runtime.config_hash:coolname}"
+    Bare = RuntimeConfig  # the framework block, which binds no hash (D21)
 
-    class RootT(Root):
+    class RootBare(Root):
+        # The realistic mistake now that the identity is opt-in: reach for the
+        # template without declaring the hash that feeds it.
+        runtime: Bare = Field(default_factory=Bare)
+
+    class Templated(TrainingOutputs):
+        dir_template: str | None = "{runtime.config_id}"
+
+    class RootT(RootBare):
         training_outputs: Templated = Field(default_factory=Templated)
 
-    # A registry that declares no config_hash, so the field it feeds stays null.
-    # (`hashes=()` on the command would not do it: an empty declared set means
-    # "every declared hash", not "none".)
-    without = HashRegistry(
-        [
-            SourceHash(
-                name="dataset_hash",
-                build=lambda ctx: {"version": "1", "scanned": True},
-                reads_inputs=True,
-            )
-        ]
-    )
+    composed = {
+        **COMPOSED,
+        "runtime": {"config_id": "{runtime.config_hash:coolname}"},
+    }
     with pytest.raises(TemplateError, match="is null"):
         resolve(
-            COMPOSED,
+            composed,
             root_type=RootT,
             command=TRAIN,
-            hashes=without,
+            hashes=HASHES,
             context=CONTEXT,
             cwd=tmp_path,
         )

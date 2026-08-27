@@ -112,7 +112,8 @@ completed during work, once, as their inputs materialize.
 - **THEN** its artifact is written and the run manifest records its value
 
 ### Requirement: Fanned-out hash declarations
-A declaration MAY yield one entry per key of a mapping or per element of a
+A declaration that fans out SHALL yield one entry per key of a mapping or per
+element of a
 sequence. Each entry SHALL persist as its own artifact named for the hash and its
 key or index. Keys SHALL be sanitized as path components, and two keys that
 sanitize to the same filename SHALL be refused rather than overwriting.

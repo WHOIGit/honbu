@@ -238,8 +238,8 @@ and identity of any run recorded there.
 - **THEN** resolution warns that the two are one directory on Windows
 
 ### Requirement: Declared steps
-A command MAY declare named steps, each with its own write scope and a resume
-policy. Entering a step SHALL prepare that scope and record its boundaries on the
+A command's named steps, each with its own write scope and a resume policy, SHALL
+be declared. Entering a step SHALL prepare that scope and record its boundaries on the
 run timeline; the scope SHALL govern what the framework clears, not what the
 project is able to write, and the framework SHALL NOT claim to sandbox project
 writes. An undeclared step name and a nested step SHALL both be refused. An
