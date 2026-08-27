@@ -37,10 +37,11 @@ foundation stays canonical by construction instead of by manual correction.
   types, and MAY subclass a base block to extend it with domain fields.
 - Fix the **identity mechanics** as the non-negotiable core: sources project in
   the config's own flat key namespace, carry a `version` field, serialize
-  through one shared canonical-JSON path, and exclude portable-path and
-  generated-identity fields by walking type markers. Each hash declares its
-  comparison **role** (gate vs. provenance) so comparison and ensembling gate
-  generically without domain knowledge.
+  through one frozen canonical encoder that refuses rather than coerces what it
+  cannot encode unambiguously, and exclude portable-path and generated-identity
+  fields by walking type markers. Each hash is a declaration and is persisted as
+  its own artifact alongside the source it digests; which operations a hash gates
+  is decided by the requesting operation, not recorded on the hash.
 - Define a **version-aware reconciliation model** for comparing runs produced
   under different framework versions: gate on per-hash recipe version (never the
   framework version); reconcile config identity by diffing stored resolved
@@ -72,12 +73,16 @@ to model it.
 - `strict-schema`: the strict-model base, field markers and walkers, and the
   project-assembles-from-framework-block-types composition model with
   block-level extension and a root-contract guard.
-- `identity-and-hashing`: canonical JSON, the `version`-stamped bare-namespace
-  source projections, deterministic human IDs, marker-driven exclusion, and the
-  per-hash comparison-role registry.
-- `run-lifecycle`: command-aware side-effect-free resolution, output-path
-  templating and resolution, collision safety, the config provenance bundle, and
-  the atomic run manifest.
+- `identity-and-hashing`: the frozen canonical encoder, the `version`-stamped
+  bare-namespace source projections, deterministic human IDs, marker-driven
+  exclusion, the three hash declaration forms, and the per-hash artifact.
+- `path-portability`: one sanitization rule for every platform, reported rather
+  than silent, with absolute-reference recognition in both syntaxes and path
+  length refused before writing.
+- `run-lifecycle`: declared commands owning their write scope, the fixed
+  resolution phase order, output-path templating and portable path resolution,
+  scope-confined collision safety and resume, declared steps, the config
+  provenance bundle, and the live run manifest with its invocation log.
 - `sweeps-and-comparison`: parameter sweeps, N-way run comparison, and ensemble
   assessment — one gate/diff/rank engine over the shared identity family, with
   the version-aware reconciliation model.

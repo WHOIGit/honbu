@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "honbu"
+version = "0.1.0.dev0"
+description = "Honbu: the shared foundation for config-driven, content-addressed training projects"
+authors = [{ name = "Sidney Batchelder", email = "sbatchelder@whoi.edu" }]
+license = "MIT"
+requires-python = ">=3.12"
+# L1 mechanics are always active, so their dependencies are the only core ones.
+# Nothing in the framework depends on a training engine, a data format, or a
+# metric at any layer.
+dependencies = [
+    "pydantic>=2.7",
+    "coolname>=5",
+]
+
+[project.optional-dependencies]
+# L2 is opt-in, so its dependencies are too: a project taking only the mechanics
+# should not pull Hydra, omegaconf and antlr. Keeping them out of the core also
+# enforces the layering — L1 cannot accidentally import a composition primitive.
+# Typer is deliberately absent. Honbu already declares the command tree, every
+# option with its arity, and every positional — the argv split runs before any CLI
+# library sees argv, so it had to. Restating that in decorators would be a second
+# source of truth for one surface, which is the drift Honbu exists to remove. A
+# project keeping Typer calls dispatch_command() from its own callback instead.
+flow = [
+    "hydra-core>=1.3",
+    "omegaconf>=2.3",
+    "rich>=13",
+    "PyYAML>=6",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/honbu"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
