@@ -29,7 +29,9 @@ from honbu.mechanics.canonical import CANONICAL_ENCODER_VERSION
 from honbu.mechanics.io import atomic_write_json, read_json
 from honbu.mechanics.targets import MANIFEST_NAME
 
-RunState = Literal["initialized", "running", "completed", "interrupted", "failed"]
+RunState = Literal[
+    "initialized", "running", "partial", "completed", "interrupted", "failed"
+]
 
 #: Event → the state it puts the run in. An event with no entry here is a project
 #: event and leaves the state alone, which is what makes the vocabulary open.
@@ -38,9 +40,16 @@ _STATE_EVENTS: dict[str, RunState] = {
     "started": "running",
     "resumed": "running",
     "finished": "completed",
+    "incomplete": "partial",
     "interrupted": "interrupted",
     "error": "failed",
 }
+
+#: Suffixes on a ``step:<name>:<suffix>`` event that mean the step is satisfied.
+#: ``completed`` is the ordinary case; ``not_applicable`` is a project declaring a
+#: required step does not apply to this run, which is deliberately *not* the same
+#: as never mentioning it — see :meth:`Manifest.satisfied_steps`.
+_SATISFYING_SUFFIXES = ("completed", "not_applicable")
 
 RESERVED_EVENTS = frozenset(_STATE_EVENTS)
 
@@ -116,14 +125,33 @@ class Manifest:
     def data(self) -> Mapping[str, Any]:
         return self._data
 
+    def _step_events(self, *suffixes: str) -> frozenset[str]:
+        found = set()
+        for entry in self._data["timeline"]:
+            event = str(entry.get("event", ""))
+            if not event.startswith("step:"):
+                continue
+            for suffix in suffixes:
+                if event.endswith(f":{suffix}"):
+                    found.add(event[len("step:") : -len(f":{suffix}")])
+        return frozenset(found)
+
     def completed_steps(self) -> frozenset[str]:
-        """Steps recorded complete, so resume knows what to skip."""
-        return frozenset(
-            entry["event"].removeprefix("step:").removesuffix(":completed")
-            for entry in self._data["timeline"]
-            if str(entry.get("event", "")).startswith("step:")
-            and str(entry["event"]).endswith(":completed")
-        )
+        """Steps recorded complete, so resume knows what to skip.
+
+        Spans every invocation, which is what makes resume work: a step completed
+        two jobs ago is complete now, whether or not this process entered it.
+        """
+        return self._step_events("completed")
+
+    def satisfied_steps(self) -> frozenset[str]:
+        """Steps that do not hold the run open — completed, or declared inapplicable.
+
+        Wider than :meth:`completed_steps` on purpose. Resume asks "what can I
+        skip", and a step declared inapplicable to this run was never going to run;
+        completion asks "is anything outstanding", and that step is not.
+        """
+        return self._step_events(*_SATISFYING_SUFFIXES)
 
     # ---- writing ----------------------------------------------------------
 
@@ -290,5 +318,20 @@ class Manifest:
         self._data["failure"] = {"kind": kind, "message": message}
         self._append_event("interrupted" if interrupted else "error")
 
+    def record_outcome(self, *, outstanding: Sequence[str] = ()) -> None:
+        """Close a producing invocation that returned without raising.
+
+        Returning is not by itself completion. A run whose required steps are all
+        satisfied is ``completed``; one that returned with steps outstanding is
+        ``partial``, which stays resumable — so running part of a stepped command,
+        deliberately or by a branch nobody meant to take, does not masquerade as a
+        finished run.
+        """
+        if outstanding:
+            self._append_event("incomplete", outstanding=list(outstanding))
+        else:
+            self._append_event("finished")
+
     def record_completion(self) -> None:
+        """Close a run as complete unconditionally. Prefer :meth:`record_outcome`."""
         self._append_event("finished")

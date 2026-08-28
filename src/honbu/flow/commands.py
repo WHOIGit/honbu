@@ -28,6 +28,8 @@ from pydantic import BaseModel
 from honbu.errors import DeclarationError, RefusalError
 from honbu.flow.compose import (
     ALL_CONFIG_SOURCES,
+    FRAMEWORK_OPTIONS,
+    SOURCE_OPTIONS,
     ConfigSource,
     OptionSpec,
     selected_source,
@@ -124,6 +126,20 @@ class CommandSpec:
     scope: Sequence[str] = ()
     hashes: Sequence[str] = ()
     steps: Sequence[StepSpec] = field(default_factory=tuple)
+    #: Which declared steps constitute a complete run. None means all of them.
+    #: A step left out is optional: not running it does not hold the run open. A
+    #: step left *in* that neither runs nor is declared inapplicable leaves the run
+    #: partial, which is what keeps a forgotten branch loud.
+    completion: Sequence[str] | None = None
+    #: Whether running this command is *work on the run*. False leaves the run's
+    #: state exactly as found, recording only the invocation's own events — which
+    #: covers both a command that prepares a run for later work (the run stays
+    #: initialized) and an augmenting command, which can never advance a run.
+    #:
+    #: Deliberately a boolean rather than a target state: states derive from the
+    #: timeline, and a command able to *name* one could declare a run complete
+    #: having done nothing.
+    advances_run: bool = True
     #: Which configuration sources this command accepts. An empty tuple means the
     #: command composes nothing, so a missing default root is not an error for it.
     config_sources: Sequence[ConfigSource] = ALL_CONFIG_SOURCES
@@ -141,6 +157,11 @@ class CommandSpec:
             object.__setattr__(self, "name", (self.name,))
         if not self.name or not all(self.name):
             raise DeclarationError("a command name needs at least one non-empty segment")
+        if self.mode == "augment":
+            # Not a declaration a project gets to make: augmenting adds to a run
+            # someone else produced, so it cannot speak to whether that run's work
+            # happened.
+            object.__setattr__(self, "advances_run", False)
 
     @property
     def slug(self) -> str:
@@ -155,6 +176,37 @@ class CommandSpec:
     @property
     def step_names(self) -> tuple[str, ...]:
         return tuple(step.name for step in self.steps)
+
+    @property
+    def required_steps(self) -> tuple[str, ...]:
+        """The steps that must be satisfied for the run to be complete."""
+        return self.step_names if self.completion is None else tuple(self.completion)
+
+    def applicable_options(self) -> tuple[str, ...]:
+        """Framework options this command accepts, derived from its declaration.
+
+        Derived rather than registered: every one of them is already implied by
+        something the command declares, so a second declaration could only drift
+        from the first. Search directories apply where the command composes;
+        permission to clear applies where it declares something clearable; resume
+        applies where it produces into a target.
+        """
+        names: list[str] = []
+        if self.config_sources:
+            names.append("--config-dir")
+            names.extend(
+                SOURCE_OPTIONS[source]
+                for source in self.config_sources
+                if source in SOURCE_OPTIONS
+            )
+        clearable = (self.mode == "produce" and self.target is not None) or (
+            self.mode == "augment" and bool(self.scope)
+        )
+        if clearable:
+            names.append("--clobber")
+        if self.mode == "produce" and self.target is not None:
+            names.append("--resume")
+        return tuple(names)
 
     def step(self, name: str) -> StepSpec:
         for spec in self.steps:
@@ -219,6 +271,13 @@ class CommandRegistry:
         if repeated:
             raise DeclarationError(
                 f"{command.invocation} declares duplicate steps: {sorted(repeated)}"
+            )
+
+        unknown = sorted(set(command.completion or ()) - set(command.step_names))
+        if unknown:
+            raise DeclarationError(
+                f"{command.invocation} requires steps it does not declare: {unknown}; "
+                f"declared: {', '.join(command.step_names) or '(none)'}"
             )
 
         unknown_sources = sorted(set(command.config_sources) - set(ALL_CONFIG_SOURCES))
@@ -329,9 +388,40 @@ def _as_list(value: Any) -> list[str]:
     return [str(v) for v in value] if isinstance(value, list) else [str(value)]
 
 
+def _inapplicable_reason(command: CommandSpec) -> dict[str, str]:
+    """Why each unoffered framework option does not apply, for the refusal message."""
+    reasons = {}
+    if not command.config_sources:
+        reasons["--config-dir"] = f"{command.invocation} composes no configuration"
+    for source, name in SOURCE_OPTIONS.items():
+        if source not in command.config_sources:
+            reasons[name] = f"{command.invocation} does not accept that source"
+    offered = set(command.applicable_options())
+    if "--clobber" not in offered:
+        reasons["--clobber"] = f"{command.invocation} declares nothing it may clear"
+    if "--resume" not in offered:
+        reasons["--resume"] = (
+            f"{command.invocation} does not produce a run, so there is none to resume"
+        )
+    return reasons
+
+
 def parse_invocation(command: CommandSpec, tokens: Sequence[str]) -> ParsedInvocation:
-    """Split argv for one command and match it against the command's declaration."""
-    split = split_argv(tokens, options=command.options)
+    """Split argv for one command and match it against the command's declaration.
+
+    The framework options offered are the ones the command's declaration implies,
+    so an inapplicable one is refused here rather than silently ignored downstream.
+    Help is generated from the same derivation, which is what stops the two from
+    disagreeing — they used to, with ``--clobber`` absent from an inspect command's
+    help and accepted by its parser.
+    """
+    applicable = set(command.applicable_options())
+    split = split_argv(
+        tokens,
+        options=command.options,
+        framework=tuple(o for o in FRAMEWORK_OPTIONS if o.name in applicable),
+        reason=_inapplicable_reason(command),
+    )
     source, value = selected_source(split.options, accepted=command.config_sources)
 
     declared = list(command.positionals)

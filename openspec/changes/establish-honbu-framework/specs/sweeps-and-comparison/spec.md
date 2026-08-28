@@ -41,29 +41,173 @@ directory, so the desugared form is legible without re-deriving it.
 - **WHEN** a child is prepared
 - **THEN** its configuration directory records the axis values that produced it
 
-### Requirement: Cartesian and paired axes
-A sweep SHALL support cartesian expansion, where the children are the product of
-every axis, and paired expansion, where a group of parameters varies together as a
-list of points. Paired groups SHALL compose with cartesian axes, contributing one
-axis of length equal to the number of points.
+### Requirement: The sweep block declares a gate, axes, and covariant axes
+A sweep block SHALL carry three things: a **gate** naming the configuration path
+that distinguishes children, an **axes** mapping of target path to values, and an
+optional **covariant_axes** mapping of label to options, where each option assigns
+several paths at once.
 
-Paired expansion SHALL be a distinct construct rather than an option on cartesian
-expansion, because a product cannot express it: two parameters that must move
-together yield the diagonal, and asking for the diagonal of a grid is asking for a
-different operation.
+Every axis SHALL contribute exactly one dimension to the cartesian product,
+including a covariant axis, whose length is its number of options. Children SHALL
+be the product of every dimension.
+
+A covariant axis SHALL be a distinct construct rather than an option on an ordinary
+axis, because a product cannot express co-variance: two parameters that must move
+together yield a diagonal, and asking for the diagonal of a grid is a different
+operation. Ordinary axes and covariant axes SHALL compose freely.
 
 #### Scenario: Cartesian product
 - **WHEN** a sweep declares axes of length two and three
 - **THEN** six children are prepared
 
-#### Scenario: Paired group
-- **WHEN** a sweep declares a paired group of two points
-- **THEN** two children are prepared, not four
+#### Scenario: Covariant axis
+- **WHEN** a sweep declares a covariant axis of two options
+- **THEN** two children are prepared, not one per assigned path
 
-#### Scenario: Paired group inside a product
-- **WHEN** a paired group of two points is combined with a cartesian axis of
-  length three
-- **THEN** six children are prepared
+#### Scenario: Covariant axis inside a product
+- **WHEN** a covariant axis of two options is combined with an axis of length three
+- **THEN** six children are prepared, and every child's covarying paths come from
+  one option
+
+### Requirement: Group axes and covariant axes reach different places
+An axis whose values name configuration-group options SHALL select whole group
+files, applied during composition. A covariant axis SHALL assign dotted paths
+directly, applied after composition.
+
+The two SHALL NOT be treated as interchangeable, because a group file's package
+path is static: it cannot target a location whose key the configuration chose, such
+as a field inside a mapping keyed by a name. Any path below such a container is
+therefore reachable only by an ordinary or covariant axis, and the framework SHALL
+document this rather than leaving it to be discovered.
+
+A configuration-group axis SHALL require that the base configuration does not also
+supply values at the group's package path. A group is merged rather than
+substituted, so a base that defines the same location yields the union of both and
+an ablation silently fails to ablate.
+
+#### Scenario: Group axis selects whole files
+- **WHEN** an axis's values name options of a configuration group
+- **THEN** each child composes with that option selected
+
+#### Scenario: Group axis cannot reach inside a container
+- **WHEN** a bundle of settings must be applied at a configuration-chosen key
+- **THEN** it is expressed as a covariant axis, because no group file can name that
+  package path
+
+#### Scenario: Base configuration shadows a swept group
+- **WHEN** the base configuration supplies values at a swept group's package path
+- **THEN** preparation refuses, naming the path, because merging would give every
+  child the union rather than the selected option
+
+### Requirement: Axis paths are validated against the schema and the configuration
+Every axis and covariant-axis path SHALL be validated at preparation, before any
+child is resolved, by two checks that catch different mistakes.
+
+The **schema** check SHALL confirm the path names a real field, traversing a
+mapping wherever the following segment is a concrete key, so that a path below a
+configuration-keyed container is validatable at all. A container step SHALL be
+traversable wherever it occurs, not only at the first one.
+
+The **data** check SHALL confirm every concrete container key on the path is
+present in the composed configuration. This is not redundant: a mapping's schema
+admits any key, so a misspelled container key passes the schema check and would
+otherwise fabricate a new entry — failing later, per child, as an invalid
+combination, which is the wrong error at the wrong time.
+
+A path failing either check SHALL be refused, naming the path and which check
+failed. It SHALL NOT be recorded as a skipped combination; skipping is for
+combinations a project validator rejects, and a bad path would skip every child
+while reporting a sweep that merely found nothing.
+
+#### Scenario: Misspelled leaf
+- **WHEN** an axis path names a field the schema does not declare
+- **THEN** preparation refuses, naming the path
+
+#### Scenario: Misspelled container key
+- **WHEN** an axis path names a container key absent from the composed
+  configuration
+- **THEN** preparation refuses, rather than creating an entry under that key
+
+#### Scenario: Path below a container is valid
+- **WHEN** an axis path descends through a concrete mapping key into a nested block
+- **THEN** it validates, and the axis expands
+
+#### Scenario: A bad path is not a skipped combination
+- **WHEN** an axis path is invalid
+- **THEN** preparation refuses outright rather than preparing zero children
+
+### Requirement: The sweep block is well-formed before it is expanded
+Three properties SHALL hold of a sweep block, checked at preparation:
+
+Every option of a covariant axis SHALL assign the same set of paths. An option
+omitting a path its siblings assign would silently inherit the base configuration's
+value, which is a hole wearing the shape of an axis.
+
+No path SHALL be claimed twice across the whole block — not by two axes, not by an
+axis and a covariant axis, not by two covariant axes. Two claims on one path mean
+one silently wins per child.
+
+A covariant axis SHALL declare at least two options. One option is a constant, not
+an axis, and belongs in the base configuration where it is visible.
+
+#### Scenario: Ragged covariant options
+- **WHEN** one option of a covariant axis omits a path its siblings assign
+- **THEN** preparation refuses, naming the path and the option
+
+#### Scenario: Path claimed twice
+- **WHEN** a path appears in an axis and also in a covariant axis
+- **THEN** preparation refuses, naming the path and both claimants
+
+#### Scenario: Single-option covariant axis
+- **WHEN** a covariant axis declares one option
+- **THEN** preparation refuses, directing the value to the base configuration
+
+### Requirement: An override may not contest a swept path
+An override addressing a path the sweep block sweeps SHALL be refused, directing
+the caller to express it as an axis. Such an override is otherwise a no-op — the
+axis assigns that path per child regardless — so accepting it would silently
+discard what the caller asked for.
+
+An override addressing any other path SHALL compose normally and join the base
+configuration for every child, which is how a sweep is re-run against a different
+input or output location.
+
+Overrides addressing the sweep block itself SHALL redefine the sweep.
+
+#### Scenario: Override contests an axis
+- **WHEN** an override assigns a path that the sweep block declares as an axis
+- **THEN** it is refused, naming the path and the axis form to use instead
+
+#### Scenario: Override outside the swept set
+- **WHEN** an override assigns a path no axis claims
+- **THEN** it applies to every child
+
+#### Scenario: Override redefines the sweep
+- **WHEN** an override addresses the sweep block
+- **THEN** it changes the sweep definition rather than being refused
+
+### Requirement: An axis overrides the composed value, and says so
+An axis SHALL win over a value the composed configuration already sets at that
+path, for every child, and preparation SHALL warn once per such axis — naming the
+axis and the value it displaces.
+
+There SHALL be no policy governing this. A stricter alternative, refusing until the
+base configuration stops setting the path, was considered and rejected: it is
+incompatible with configuration-group axes, whose package path is *always* set by
+the base defaults list; the mistake it chiefly guarded against — a misspelled path
+— is caught precisely by axis-path validation; and its remedy pressures an author
+to delete a default that is meaningful when the configuration is run alone.
+
+The warning SHALL be emitted once per axis rather than once per child, so a large
+sweep does not bury it.
+
+#### Scenario: Axis displaces a base value
+- **WHEN** an axis assigns a path the composed configuration sets
+- **THEN** every child takes the axis value, and one warning names the displaced one
+
+#### Scenario: Warning does not scale with the sweep
+- **WHEN** a sweep of many children displaces one base value
+- **THEN** the warning is emitted once
 
 ### Requirement: A sweep declares the value that distinguishes its children
 A sweep SHALL declare the configuration path whose value identifies a child, and
@@ -144,15 +288,27 @@ preparation, so that one command has one target.
 - **THEN** it is refused, directing the caller to prepare the sweep first
 
 ### Requirement: Sweep state is derived from the children's manifests
-The sweep index SHALL be immutable after preparation and SHALL record no progress.
 A child's state SHALL be held solely in that child's own manifest, and the sweep's
-state SHALL be the aggregate, computed on read. Nothing but a child SHALL write a
-child's manifest.
+state SHALL be the aggregate. Nothing but a child SHALL write a child's manifest,
+so the two can never disagree.
 
-Execution SHALL therefore be resumable with no driver-side state: a child recorded
-complete SHALL be skipped, and a child in any resumable state SHALL be resumed.
-Stopping execution at any point and resuming later SHALL lose no completed work and
-SHALL repeat none.
+The sweep manifest SHALL hold two zones with different rules. The **index** —
+children, coordinates, gate values, realized axis values, run directories — SHALL
+be immutable after preparation. The **progress** zone SHALL be a cache: every value
+in it SHALL be derivable by rescanning the children, and it SHALL carry the time it
+was last refreshed.
+
+The progress zone SHALL never be authoritative. It exists so a human can read a
+sweep's state at a glance without invoking a tool, which is worth having; but a
+child run by an external scheduler updates its own manifest and nothing else, so
+the cache is stale exactly when it is most wanted. Recording the refresh time is
+therefore not decoration — without it the file states a count as though it were
+current. Any operation reporting sweep state SHALL refresh before reporting.
+
+Execution SHALL be resumable with no driver-side state: a child recorded complete
+SHALL be skipped, and a child in any resumable state SHALL be resumed. Stopping
+execution at any point and resuming later SHALL lose no completed work and SHALL
+repeat none. Deleting the progress zone SHALL NOT change what execution does.
 
 #### Scenario: Interrupted sweep resumes
 - **WHEN** execution is stopped partway and started again
@@ -167,10 +323,20 @@ SHALL repeat none.
 - **WHEN** a child is killed by a scheduler and left recorded as running
 - **THEN** it is treated as resumable and picked up by the next execution pass
 
-#### Scenario: State is not cached
-- **WHEN** the sweep's status is requested
-- **THEN** it is computed from the children's manifests rather than read from a
-  sweep-level progress record
+#### Scenario: Progress is readable without a tool
+- **WHEN** a sweep has been executed in part
+- **THEN** its manifest records each child's last-known state and the time that
+  record was refreshed
+
+#### Scenario: Cache is rebuilt, never trusted
+- **WHEN** the progress zone is deleted or disagrees with the children
+- **THEN** rescanning restores it, and no operation's behavior changed
+
+#### Scenario: Children run outside the driver
+- **WHEN** children are run by an external scheduler that updates only their own
+  manifests
+- **THEN** the sweep's progress zone is stale until refreshed, and its recorded
+  refresh time says so
 
 ### Requirement: Uniform child invocation
 Every prepared child SHALL be executable by identifying its run directory and

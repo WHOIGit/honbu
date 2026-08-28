@@ -244,11 +244,6 @@ def dispatch_command(
         "parent": parent,
     }
 
-    if parsed.options.get("--init"):
-        run = initialize_run(resolution, **common)  # type: ignore[arg-type]
-        print(f"initialized {run.run_dir}")
-        return
-
     with open_run(resolution, resume=bool(parsed.options.get("--resume")), **common) as run:  # type: ignore[arg-type]
         handler.work(run)  # type: ignore[arg-type]
 
@@ -404,14 +399,10 @@ class Application:
         else:
             lines += ["", "takes no configuration"]
 
-        relevant = [
-            option
-            for option in FRAMEWORK_OPTIONS
-            if option.name not in SOURCE_OPTIONS.values()
-            or option.name in {SOURCE_OPTIONS.get(s) for s in spec.config_sources}
-        ]
-        if spec.target is None:
-            relevant = [o for o in relevant if o.name not in {"--clobber", "--resume"}]
+        # From the same derivation the parser uses, so help cannot advertise an
+        # option the parser refuses, or hide one it accepts.
+        applicable = set(spec.applicable_options())
+        relevant = [o for o in FRAMEWORK_OPTIONS if o.name in applicable]
         lines += ["", "options:"]
         for option in [*relevant, *spec.options]:
             suffix = " VALUE" if option.takes_value else ""

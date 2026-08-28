@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from hydra import compose, initialize_config_dir
+from hydra.errors import HydraException
 from omegaconf import OmegaConf
 
 from honbu.errors import RefusalError
@@ -61,9 +62,16 @@ class OptionSpec:
     repeatable: bool = False
 
 
-#: Options Honbu itself consumes. ``--force`` is absent by decision: it never
-#: fired under a timestamped run template and fired on every deliberate re-run
-#: under a deterministic one, so a described occupant replaced it.
+#: Options Honbu itself consumes. Every one of them acts *before or around* project
+#: code — which configuration is used, where it is looked for, and whether Honbu may
+#: write where it intends. None of them decides how much of a command's work runs;
+#: that is the project's, expressed by declaring a command (D25).
+#:
+#: Two absences by decision. ``--force`` never fired under a timestamped run
+#: template and fired on every deliberate re-run under a deterministic one, so a
+#: described occupant replaced it. ``--init`` meant "persist the bundle and stop",
+#: which is the one thing here that decided how much work happened; with a partial
+#: run state a project declares its own command for that and names it itself.
 FRAMEWORK_OPTIONS: tuple[OptionSpec, ...] = (
     OptionSpec("--config", takes_value=True),
     OptionSpec("--resolved", takes_value=True),
@@ -71,10 +79,6 @@ FRAMEWORK_OPTIONS: tuple[OptionSpec, ...] = (
     OptionSpec("--config-dir", takes_value=True, repeatable=True),
     OptionSpec("--clobber"),
     OptionSpec("--resume"),
-    # Persist the bundle and stop. Without it, `initialized` would exist only for
-    # the milliseconds between creating the manifest and recording `started`, and
-    # "set the run up now, train in tonight's allocation" would have no spelling.
-    OptionSpec("--init"),
 )
 
 #: Which framework option supplies which configuration source.
@@ -111,13 +115,20 @@ def split_argv(
     tokens: Sequence[str],
     *,
     options: Iterable[OptionSpec] = (),
+    framework: Iterable[OptionSpec] = FRAMEWORK_OPTIONS,
+    reason: Mapping[str, str] | None = None,
 ) -> ArgvSplit:
     """Route argv into overrides, options and positionals.
 
     A token containing ``=`` and no leading dash is an override, which handles the
     compositor's own ``+``, ``++`` and ``~`` prefixes for free — all are dash-free.
+
+    ``framework`` is the subset of framework options this caller accepts; ``reason``
+    explains, per excluded option, why it does not apply, so a refusal says more than
+    "unknown option" for a token that is real but out of place.
     """
-    known = {spec.name: spec for spec in (*FRAMEWORK_OPTIONS, *options)}
+    known = {spec.name: spec for spec in (*framework, *options)}
+    excluded = dict(reason or {})
 
     overrides: list[str] = []
     positionals: list[str] = []
@@ -132,6 +143,10 @@ def split_argv(
             name, separator, inline = token.partition("=")
             spec = known.get(name)
             if spec is None:
+                if name in excluded:
+                    raise RefusalError(
+                        f"{name} does not apply here: {excluded[name]}"
+                    )
                 raise RefusalError(
                     f"unknown option {name!r}; known options: "
                     f"{', '.join(sorted(known))}"
@@ -339,6 +354,43 @@ def _packaged_dir(package: str) -> Path:
     return path
 
 
+#: Where sweep axes are declared, named in the refusal below so the message points
+#: somewhere useful. Honbu owns expansion and never runs compositor multirun (D22).
+SWEEP_BLOCK = "sweep"
+
+
+def check_overrides(overrides: Sequence[str]) -> None:
+    """Refuse a bare top-level comma, and translate a malformed override.
+
+    ``epochs=10,20`` is a multi-value sweep in the compositor's grammar and one
+    character from ``epochs=[10,20]``, a single list value — opposite meanings.
+    Honbu does not run compositor multirun, so accepting it would either discard
+    every value but one or smuggle in an execution model it does not own.
+
+    Left to the compositor this surfaced as an uncaught exception whose advice was
+    to add ``--multirun``, which is precisely the thing that will not work here.
+    """
+    from hydra.core.override_parser.overrides_parser import OverridesParser
+
+    parser = OverridesParser.create()
+    for token in overrides:
+        try:
+            parsed = parser.parse_overrides([token])[0]
+        except Exception as exc:  # the compositor's own grammar errors
+            raise RefusalError(f"cannot parse override {token!r}: {exc}") from None
+        if "SWEEP" not in str(parsed.value_type or ""):
+            continue
+        key = parsed.get_key_element()
+        raise RefusalError(
+            f"{token!r} reads as a multi-value sweep. Honbu expands sweeps itself and "
+            f"never runs compositor multirun, so declare the axis in the "
+            f"{SWEEP_BLOCK!r} block instead:\n"
+            f"  {SWEEP_BLOCK}.axes.{key}=[...]\n"
+            f"To set a single list value, bracket it: {key}=[...]. "
+            f"To set a string containing a comma, quote it: {key}='a,b'."
+        )
+
+
 def compose_config(
     spec: ComposeSpec,
     *,
@@ -347,6 +399,7 @@ def compose_config(
     cwd: Path | None = None,
 ) -> dict[str, Any]:
     """Compose the default root into a plain dict."""
+    check_overrides(overrides)
     search = build_search_path(spec, extra_dirs, cwd=cwd)
 
     primary = next(
@@ -368,8 +421,13 @@ def compose_config(
     if searchpath:
         full.insert(0, f"hydra.searchpath=[{','.join(searchpath)}]")
 
-    with initialize_config_dir(config_dir=str(primary), version_base=None):
-        composed = compose(config_name=spec.config_name, overrides=full)
+    try:
+        with initialize_config_dir(config_dir=str(primary), version_base=None):
+            composed = compose(config_name=spec.config_name, overrides=full)
+    except HydraException as exc:
+        # A composition error is a message to the user about their configuration,
+        # not a defect in Honbu, so it exits like one rather than as a traceback.
+        raise RefusalError(f"composition failed: {exc}") from None
     container = OmegaConf.to_container(composed, resolve=True)
     if not isinstance(container, dict):
         raise RefusalError("composed configuration is not a mapping")

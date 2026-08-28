@@ -42,12 +42,12 @@ from honbu.mechanics.canonical import (
 )
 from honbu.mechanics.io import atomic_write_json, read_json
 from honbu.mechanics.markers import (
+    check_field_path,
     excluded_source_paths,
     identity_bindings,
     is_resolved_only,
     parse_dotted,
     prune_path,
-    traversable_submodel,
 )
 from honbu.mechanics.model import StrictModel
 from honbu.mechanics.paths import sanitize_path_component
@@ -175,19 +175,14 @@ class HashResult:
 
 
 def declared_path_exists(model_cls: type[BaseModel], dotted: str) -> bool:
-    """Whether ``dotted`` names a real field, traversing direct submodels only."""
-    segments = parse_dotted(dotted)
-    current: type[BaseModel] | None = model_cls
-    for index, segment in enumerate(segments):
-        if current is None:
-            return False
-        fields = getattr(current, "model_fields", None)
-        if not fields or segment not in fields:
-            return False
-        if index == len(segments) - 1:
-            return True
-        current = traversable_submodel(fields[segment].annotation)
-    return False
+    """Whether ``dotted`` names a real field, traversing direct submodels only.
+
+    The boolean face of :func:`check_field_path` with container traversal off —
+    one traversal, not two. A hash's include set and a command's write scope name
+    whole containers rather than reaching inside them; a sweep axis is the caller
+    that legitimately does the opposite.
+    """
+    return check_field_path(model_cls, dotted) is None
 
 
 def select_paths(dump: Mapping[str, Any], includes: Sequence[str]) -> dict[str, Any]:

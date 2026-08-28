@@ -13,6 +13,7 @@ import pytest
 from honbu import RefusalError
 from honbu.errors import DeclarationError
 from honbu.flow import (
+    check_overrides,
     compose_config,
     CommandRegistry,
     CommandSpec,
@@ -339,3 +340,44 @@ def test_a_missing_primary_config_is_refused(tmp_path):
     (tmp_path / "configs").mkdir()
     with pytest.raises(RefusalError, match="no config.yaml on the configuration"):
         compose_config(ComposeSpec(packaged=None), cwd=tmp_path)
+
+
+# --------------------------------------------------------------------------- #
+# a bare top-level comma is a sweep, and Honbu does not run compositor multirun
+# --------------------------------------------------------------------------- #
+
+
+def test_a_bare_top_level_comma_is_refused_pointing_at_the_sweep_block():
+    """One character from a list value and the opposite meaning.
+
+    Left to the compositor this escaped as an uncaught exception whose advice was
+    to add --multirun, which is exactly what Honbu does not run.
+    """
+    with pytest.raises(RefusalError, match="multi-value sweep") as caught:
+        check_overrides(["epochs=10,20"])
+    assert "sweep.axes.epochs=[...]" in str(caught.value)
+
+
+def test_commas_that_are_part_of_a_value_compose():
+    check_overrides(["tags=[a,b]", "name='a,b'", "sweep.axes.epochs=[10,20]"])
+
+
+def test_override_prefixes_are_untouched():
+    check_overrides(["+new.key=5", "~old.key", "++forced=1"])
+
+
+def test_a_malformed_override_is_a_refusal_not_a_traceback():
+    with pytest.raises(RefusalError, match="cannot parse override"):
+        check_overrides(["bad==="])
+
+
+def test_a_composition_error_is_a_refusal_not_a_traceback(tmp_path):
+    """A user's configuration mistake exits like a message, not like a defect."""
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "config.yaml").write_text("a: 1\n")
+    with pytest.raises(RefusalError, match="composition failed"):
+        compose_config(
+            ComposeSpec(packaged=None, local="configs"),
+            overrides=["nonexistent.key=2"],
+            cwd=tmp_path,
+        )

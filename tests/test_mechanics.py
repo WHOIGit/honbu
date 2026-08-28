@@ -37,6 +37,7 @@ from honbu import (
     atomic_write_text,
     backend_kwargs,
     canonical_bytes,
+    check_field_path,
     excluded_source_paths,
     hash_source,
     marked_field_paths,
@@ -52,7 +53,7 @@ from honbu import (
     write_hash_entries,
 )
 from honbu.errors import CanonicalizationError, DeclarationError, TemplateError
-from honbu.mechanics.hashes import ByteHash, declared_path_exists
+from honbu.mechanics.hashes import ByteHash, declared_path_exists, project_fields
 
 # --------------------------------------------------------------------------- #
 # schemas used across the tests
@@ -823,3 +824,173 @@ def test_binding_a_configuration_identity_is_two_lines():
 
     registry = HashRegistry([FieldHash(name=CONFIG_HASH_NAME, include=["experiment"])])
     assert validate_identity_fields(Root, registry) == ((("runtime", "config_hash"), "config_hash"),)
+
+
+def test_sweep_membership_cannot_enter_a_digest():
+    """A sweep child's digest must equal the same configuration run by hand.
+
+    `sweep_id` is assigned rather than authored, so it carries the derived and
+    resolved-only markers. Before it did, a project that included the runtime block
+    in a field hash got a child whose digest incorporated its sweep membership —
+    making it incomparable to a hand-run baseline, silently.
+    """
+    from pathlib import Path
+
+    from pydantic import Field
+
+    from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
+    from honbu.mechanics.markers import PortablePath
+
+    class Root(StrictModel):
+        experiment: ExperimentConfig
+        runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+        output_root: PortablePath = Path("./runs")
+
+    declaration = FieldHash(name="config_hash", include=["experiment", "runtime"])
+    in_sweep = Root(
+        experiment={"name": "x"}, runtime=RuntimeConfig(seed=7, sweep_id="brave-otter")
+    )
+    by_hand = Root(experiment={"name": "x"}, runtime=RuntimeConfig(seed=7))
+
+    assert project_fields(declaration, {"config": in_sweep}) == project_fields(
+        declaration, {"config": by_hand}
+    )
+
+
+def test_continuing_from_a_sweep_child_does_not_inherit_membership():
+    """Resolved-only, so the continuation is a new run rather than a member."""
+    from honbu.flow.resolve import strip_resolved_only
+    from pathlib import Path
+
+    from pydantic import Field
+
+    from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
+    from honbu.mechanics.markers import PortablePath
+
+    class Root(StrictModel):
+        experiment: ExperimentConfig
+        runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+        output_root: PortablePath = Path("./runs")
+
+    parent = {"experiment": {"name": "x"}, "runtime": {"seed": 7, "sweep_id": "brave-otter"}}
+    assert "sweep_id" not in strip_resolved_only(parent, Root)["runtime"]
+
+
+# --------------------------------------------------------------------------- #
+# addressable field paths: the two checks a sweep axis needs
+# --------------------------------------------------------------------------- #
+
+
+class Network(StrictModel):
+    hidden_dims: list[int] = Field(default_factory=lambda: [512])
+    dropout: float = 0.1
+
+
+class HeadBlock(StrictModel):
+    target: str
+    network: Network = Field(default_factory=Network)
+
+
+class Source(StrictModel):
+    uri: str
+
+
+class ModelBlock(StrictModel):
+    backbone: str
+    heads: dict[str, HeadBlock] = Field(default_factory=dict)
+    sources: list[Source] = Field(default_factory=list)
+
+
+class Axes(StrictModel):
+    model: ModelBlock
+    epochs: int = 10
+
+
+COMPOSED_AXES = {
+    "model": {
+        "backbone": "resnet50",
+        "heads": {"species": {"target": "species"}, "damage": {"target": "damage"}},
+        "sources": [{"uri": "a"}, {"uri": "b"}],
+    }
+}
+
+
+def _problem(dotted, **kwargs):
+    return check_field_path(Axes, dotted, **kwargs)
+
+
+def test_an_ordinary_path_is_addressable():
+    assert _problem("epochs") is None
+    assert _problem("model.backbone") is None
+
+
+def test_an_unknown_field_names_the_segment():
+    problem = _problem("model.bakcbone")
+    assert problem.kind == "unknown_field" and problem.segment == "bakcbone"
+
+
+def test_a_container_is_not_traversed_unless_asked():
+    """Declarations that must name a whole container keep their old behavior."""
+    problem = _problem("model.heads.species.target")
+    assert problem.kind == "not_traversable"
+    assert declared_path_exists(Axes, "model.heads.species.target") is False
+    assert declared_path_exists(Axes, "model.heads") is True
+
+
+def test_a_container_step_is_traversable_wherever_it_occurs():
+    """Not merely the first one, and the path continues past it."""
+    assert _problem("model.heads.species.target", traverse_containers=True) is None
+    assert (
+        _problem("model.heads.species.network.dropout", traverse_containers=True) is None
+    )
+    assert (
+        _problem("model.heads.species.network.hidden_dims", traverse_containers=True)
+        is None
+    )
+
+
+def test_the_schema_check_catches_a_misspelled_leaf_below_a_container():
+    problem = _problem("model.heads.species.network.dropuot", traverse_containers=True)
+    assert problem.kind == "unknown_field" and problem.segment == "dropuot"
+
+
+def test_only_the_data_check_catches_a_misspelled_container_key():
+    """A mapping's schema admits any key, so the schema check cannot see this.
+
+    Without the data check the axis would fabricate a head named 'speces', which
+    surfaces much later as a per-child validation failure.
+    """
+    dotted = "model.heads.speces.network.dropout"
+    assert _problem(dotted, traverse_containers=True) is None  # schema alone: fine
+    problem = _problem(dotted, data=COMPOSED_AXES, traverse_containers=True)
+    assert problem.kind == "missing_key" and problem.segment == "speces"
+    assert "species" in problem.message  # names what is actually there
+
+
+def test_presence_is_required_only_at_container_steps():
+    """A schema-defaulted leaf is legitimately absent from the composed tree."""
+    assert "network" not in COMPOSED_AXES["model"]["heads"]["species"]
+    assert (
+        _problem(
+            "model.heads.species.network.dropout",
+            data=COMPOSED_AXES,
+            traverse_containers=True,
+        )
+        is None
+    )
+
+
+def test_a_sequence_is_addressed_by_index():
+    assert _problem("model.sources.0.uri", data=COMPOSED_AXES, traverse_containers=True) is None
+    out_of_range = _problem(
+        "model.sources.7.uri", data=COMPOSED_AXES, traverse_containers=True
+    )
+    assert out_of_range.kind == "missing_key" and "2 entries" in out_of_range.message
+    not_a_number = _problem(
+        "model.sources.first.uri", data=COMPOSED_AXES, traverse_containers=True
+    )
+    assert not_a_number.kind == "bad_index"
+
+
+def test_the_container_key_itself_may_be_the_leaf():
+    assert _problem("model.heads.species", data=COMPOSED_AXES, traverse_containers=True) is None

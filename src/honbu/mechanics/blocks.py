@@ -78,6 +78,15 @@ class RuntimeConfig(StrictModel):
     something enforced here. ``config_id`` may equally bind to a per-command digest,
     which is often the more useful identity.
 
+    ``sweep_id`` is assigned, never authored — it holds no value in a composed
+    configuration — so it is derived and resolved-only like the other assigned
+    fields, and therefore excluded from every digest. That exclusion is load-bearing:
+    without it a sweep child's digest would incorporate its sweep membership, and the
+    child could not be compared against the same configuration run by hand. Being
+    resolved-only also means continuing from a sweep child does not inherit the
+    parent's sweep membership, which is correct — the continuation is a new run, not
+    a thirteenth member.
+
     The identity-marked fields appear in the run manifest; the digests do not, because
     not every hash warrants an identity.
 
@@ -94,7 +103,7 @@ class RuntimeConfig(StrictModel):
     run_id: TemplatedIdentity = "{:coolname}"
     config_id: TemplatedIdentity | None = None
     config_hash: ResolvedString = None
-    sweep_id: Annotated[str | None, IDENTITY] = None
+    sweep_id: Annotated[ResolvedString, IDENTITY] = None
 
 
 class OutputBlock(StrictModel):

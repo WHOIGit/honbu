@@ -27,6 +27,8 @@ from honbu.flow.commands import (
     parse_invocation,
 )
 from honbu.flow.compose import (
+    SWEEP_BLOCK,
+    check_overrides,
     ALL_CONFIG_SOURCES,
     FRAMEWORK_OPTIONS,
     SOURCE_OPTIONS,
@@ -96,6 +98,8 @@ __all__ = [
     "WorkFn",
     "anchor",
     "build_search_path",
+    "SWEEP_BLOCK",
+    "check_overrides",
     "compose_config",
     "compose_file",
     "composed_config_path",

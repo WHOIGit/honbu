@@ -99,6 +99,17 @@ TRAIN = CommandSpec(
     ),
 )
 
+#: The declared spelling of "set the run up now, work it tonight". It declares no
+#: steps and does not advance the run, so it leaves the directory initialized and
+#: resumable — no framework flag, and no borrowing another command's step list.
+PREPARE = CommandSpec(
+    name=("prepare",),
+    target=TARGET,
+    hashes=("config_hash",),
+    config_sources=("default", "file"),
+    advances_run=False,
+)
+
 EVAL = CommandSpec(
     name=("eval",),
     mode="augment",
@@ -144,6 +155,10 @@ def build_app(record: list[str]) -> Application:
                     (ckpt / "last.pt").write_text("weights")
                     run.record_artifact("checkpoint", "checkpoints/last.pt")
                     run.record_best(epoch=7, metrics={"map50": 0.6})
+
+    @app.command(PREPARE, help="create the run directory without working it")
+    def prepare_only(run):
+        record.append(f"prepare:{run.run_dir.name}")
 
     @app.command(EVAL, help="evaluate a finished run")
     def evaluate(run):
@@ -232,19 +247,26 @@ def test_clobber_replaces_it(project):
     assert app.dispatch(["train", "--clobber"]) == 0
 
 
-def test_init_persists_the_bundle_and_stops(project):
+def test_a_command_can_prepare_a_run_without_working_it(project):
+    """What `--init` used to be, now declared by the project (D25).
+
+    The run is left partial rather than completed, so it stays resumable and the
+    framework reserves no flag for "how much work to do".
+    """
     record: list[str] = []
-    assert build_app(record).dispatch(["train", "--init"]) == 0
+    assert build_app(record).dispatch(["prepare"]) == 0
     run_dir = next((project / "runs" / "reef-v3").iterdir())
     assert (run_dir / "config" / "resolved.yaml").is_file()
     assert Manifest.load(run_dir).state == "initialized"
-    assert record == []  # work never ran
+    assert record == ["prepare:" + run_dir.name]
+    events = [e["event"] for e in Manifest.load(run_dir).data["timeline"]]
+    assert "started" not in events  # nothing claims work occurred
 
 
-def test_a_later_invocation_resumes_an_initialized_run(project):
+def test_a_later_invocation_resumes_a_prepared_run(project):
     record: list[str] = []
     app = build_app(record)
-    app.dispatch(["train", "--init"])
+    app.dispatch(["prepare"])
     run_dir = next((project / "runs" / "reef-v3").iterdir())
 
     assert app.dispatch(["train", "--resume", "--resolved", str(run_dir)]) == 0
@@ -358,7 +380,7 @@ def test_continuing_does_not_inherit_the_parents_directory_or_identity(project):
 
 def test_continuing_from_a_run_with_no_such_artifact_is_refused(project, capsys):
     app = build_app([])
-    app.dispatch(["train", "--init"])
+    app.dispatch(["prepare"])
     parent = next((project / "runs" / "reef-v3").iterdir())
     assert app.dispatch(["train", "--continue-from", str(parent), "epochs=50"]) == 1
     assert "registered no 'checkpoint' artifact" in capsys.readouterr().err
@@ -475,3 +497,30 @@ def test_the_manifest_records_the_invocation_text(project):
     argv = Manifest.load(run_dir).data["invocations"][0]["argv"]
     assert argv == "train --clobber epochs=50"
     assert MANIFEST_NAME in [p.name for p in run_dir.iterdir()]
+
+
+def test_an_inapplicable_framework_option_is_refused(project):
+    """Help and the parser used to disagree: `inspect checkpoint` advertised
+    neither --clobber nor --resume, and the parser accepted both in silence."""
+    app = build_app([])
+    handler = app.handlers["inspect-checkpoint"]
+    assert "--clobber" not in app.command_help(handler)
+    assert app.dispatch(["inspect", "checkpoint", "a.ckpt", "--clobber"]) == 1
+
+
+def test_help_offers_exactly_what_the_parser_accepts(project):
+    """One derivation feeds both, so they cannot drift apart."""
+    app = build_app([])
+    for handler in app.handlers.values():
+        offered = set(handler.spec.applicable_options())
+        text = app.command_help(handler)
+        for option in ("--clobber", "--resume", "--config-dir"):
+            assert (option in text) == (option in offered), (
+                f"{handler.spec.invocation}: help and derivation disagree on {option}"
+            )
+
+
+def test_the_framework_reserves_no_option_governing_how_much_work_runs(project):
+    from honbu.flow.compose import FRAMEWORK_OPTIONS
+
+    assert "--init" not in {option.name for option in FRAMEWORK_OPTIONS}

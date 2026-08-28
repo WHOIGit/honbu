@@ -8,8 +8,11 @@
 - [x] 1.3 `model`: strict base (forbid extras, validate assignment and defaults,
   strip whitespace, non-finite survive serialization), the deferral sentinel and
   `backend_kwargs`.
-- [x] 1.4 `markers`: three markers and composed aliases, container-aware marker
-  walkers with memoization, wildcard-expanding pruner, unmarked-path guard.
+- [x] 1.4 `markers`: markers and composed aliases, container-aware marker walkers
+  with memoization, wildcard-expanding pruner, unmarked-path guard, and the
+  addressable-field-path check — schema plus composed-data in one traversal, with
+  container steps traversable on request and sequence entries addressed by index
+  (D24).
 - [x] 1.5 `paths`: union sanitization for every platform, sanitization warnings,
   absolute-reference detection in both syntaxes, platform path-length budget.
 - [x] 1.6 `io`: atomic write (unique temp + rename, residue-free), text and
@@ -18,7 +21,7 @@
   namespace, extensible function registry with `emits_path`, sanitization
   exemption for path-marked sources, and the token-path extractor the command
   registry reads.
-- [x] 1.8 `hashes`: the three declaration forms, declared-path validation at
+- [x] 1.8 `hashes`: the four declaration forms, declared-path validation at
   registry construction, `HashEntry`, per-hash artifact writer/reader, tri-state
   verification, deferred identities.
 - [x] 1.9 `hashes`: `FannedHash` — one entry per mapping key or sequence index,
@@ -43,13 +46,14 @@
 - [x] 3.1 `commands`: `TargetSpec`, `StepSpec`, `CommandSpec`, and a registry
   validating declared paths, hash names, shape, and the deferred-token rule at
   construction.
-- [x] 3.2 `manifest`: the live single-writer run record — five states derived
+- [x] 3.2 `manifest`: the live single-writer run record — six states derived
   from an append-only timeline, invocations with config indices, artifacts,
   progress, best, lineage, auto-flushing atomically.
 - [x] 3.3 `compose`: exported search-path assembly with defined precedence, the
-  Hydra call behind a lazy import, four mutually exclusive configuration sources
-  declared per command, and the dash-rule argv split with declared option arity
-  and positionals.
+  Hydra call at module scope, four mutually exclusive configuration sources
+  declared per command, the dash-rule argv split with declared option arity and
+  positionals, the bare-top-level-comma refusal pointing at the sweep block, and
+  compositor errors translated to refusals rather than escaping as tracebacks.
 - [x] 3.4 `FromHash` field marker: assigns the digest, validated against the hash
   registry and refused on a field that is not resolved-only.
 - [x] 3.5 Resolver walking the fixed phase order, returning a pure `Resolution`
@@ -65,16 +69,17 @@
 
 ## 4. L3 — Capabilities
 
-- [ ] 4.0 Flatten the install and reverse the reserved hash name (D20, D21):
+- [x] 4.0 Flatten the install and reverse the reserved hash name (D20, D21):
   compositor, config library and YAML into core dependencies; delete the three
   "install the extra" refusal branches; add the layering guard test asserting no
   mechanics module imports them; drop the `FromHash` binding from the base runtime
   block and default the configuration-identity field to null; add
   `submitit`/`optuna` extras.
-- [ ] 4.1 Sweep block and expansion (D22): the open axis mapping in the root
-  schema, flat-and-nested key normalization recorded per child, cartesian and
-  paired axes, the bare-top-level-comma refusal pointing at the block, and the
-  sweep-definition digest under the standard exclusions.
+- [ ] 4.1 Sweep block and expansion (D22, D24): `gate` / `axes` / `covariant_axes`
+  as an open mapping in the root schema, flat-and-nested key normalization recorded
+  per child, one dimension per axis whatever its kind, the bare-top-level-comma
+  refusal pointing at the block, and the sweep-definition digest under the standard
+  exclusions.
 - [ ] 4.1a The child-distinguishing gate: declared identifier, stability
   verification by resolving under two invocation contexts, the
   must-appear-in-the-output-template rule, and a refusal naming colliding children
@@ -85,16 +90,43 @@
   output block with its `config/` holding the immutable index, and a producing
   command's refusal of an active sweep block.
 - [ ] 4.1c Execution and status derived from the children's manifests: skip
-  completed, resume every resumable state, no sweep-level progress record, uniform
-  `--resolved <child> --resume` invocation, and stop/resume verified by test.
+  completed, resume every resumable state, uniform `--resolved <child> --resume`
+  invocation, and stop/resume verified by test.
 - [ ] 4.1d Optional execution adapters: local sequential needing no extra, a job
   submitter, and a search-driven sweeper reading its objective from a child's
   recorded best metrics rather than a work-function return value.
+- [ ] 4.1e Axis well-formedness (D24): the same-paths-per-option,
+  no-path-claimed-twice and at-least-two-options rules; refusal rather than a
+  skipped combination for a bad path; the refusal of an override contesting a swept
+  path; the axis-wins warning emitted once per axis; and the refusal of a group axis
+  whose package path the base configuration also sets.
+- [ ] 4.1f Sweep manifest (D23): the immutable index zone, the rebuildable progress
+  cache with its refresh time, refresh-before-report, and a test that deleting the
+  cache changes no behavior.
+- [x] 4.5 Completion and the reserved surface (D25): a producing command's declared
+  completion set defaulting to all steps; the `partial` state joining the resumable
+  set; augmenting commands no longer recording started/finished or failing a
+  completed run; `--init` removed with `initialize_run()` retained for sweep
+  preparation; framework-option applicability derived per command and enforced at
+  parse time, with help generated from the same derivation.
 - [ ] 4.2 Comparison engine (operation-declared gates, N-way residual diff,
   objective rank) sharing the sweep rollup.
 - [ ] 4.3 Version-aware reconciliation (per-hash recipe gating, resolved-tree
   diff, source re-hash, advisory-warn vs. artifact-refuse).
 - [ ] 4.4 Ensemble assessment (stricter gates, combine work-fn seam, objective).
+
+- [ ] 4.6 Config comparison (D26): operand references reusing the four
+  configuration sources plus a run directory; N-way result distinguishing absent
+  from null; the literal / authored / behavioral / by_hash levels with availability
+  following from root type and registry; unavailable levels refused rather than
+  downgraded; hash attribution with callable-built hashes reported opaque; a
+  structured result plus one provided renderer.
+- [ ] 4.7 Config materialization (D27): closure from the compositor's recorded group
+  selections with its internal groups excluded; project-declared scopes over roots
+  and packaged resources; the create/skip/overwrite plan, dry run, additive default,
+  explicit overwrite, and never deleting; functions plus optional command
+  registration reserving no name.
+- [ ] 4.8 Local-versus-packaged drift, as an application of 4.6 over 4.7's two trees.
 
 ## 5. Release discipline and adoption
 

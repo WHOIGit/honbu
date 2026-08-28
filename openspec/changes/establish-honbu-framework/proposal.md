@@ -83,7 +83,7 @@ to model it.
   block-level extension and a root-contract guard.
 - `identity-and-hashing`: the frozen canonical encoder, the `version`-stamped
   bare-namespace source projections, deterministic human IDs, marker-driven
-  exclusion, the three hash declaration forms, and the per-hash artifact.
+  exclusion, the four hash declaration forms, and the per-hash artifact.
 - `path-portability`: one sanitization rule for every platform, reported rather
   than silent, with absolute-reference recognition in both syntaxes and path
   length refused before writing.
@@ -91,6 +91,15 @@ to model it.
   resolution phase order, output-path templating and portable path resolution,
   scope-confined collision safety and resume, declared steps, the config
   provenance bundle, and the live run manifest with its invocation log.
+- `config-comparison`: N-way comparison of configurations of any kind — authored
+  file, default root with overrides, a prior run's composed or resolved form — at
+  four declared levels drawn from the field markers, with differences attributed to
+  the declared hashes they would move and callable-built hashes reported opaque
+  rather than silently cleared.
+- `config-materialization`: packaged defaults usable before a local tree exists,
+  and materialization of a declared closure into a working tree — planned,
+  additive, never deleting — with divergence from the packaged original answered by
+  comparison rather than a lockfile.
 - `sweeps-and-comparison`: config-defined sweeps expanded by Honbu over the
   compositor's override parser rather than its multirun machinery — cartesian and
   paired axes, a declared child-distinguishing gate checked before anything is

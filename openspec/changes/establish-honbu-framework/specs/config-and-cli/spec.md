@@ -166,6 +166,40 @@ top-level.
 - **WHEN** an override supplies a quoted value containing a comma
 - **THEN** it composes as one string
 
+### Requirement: A framework option applies only where the command's declaration implies it
+Each framework option's applicability SHALL be derived from what the command
+already declares, and an inapplicable option SHALL be refused at parse time naming
+why. Help SHALL be generated from the same derivation, so the option surface a
+command advertises and the one it accepts cannot differ.
+
+Applicability SHALL NOT be a separate per-command registration. Every framework
+option is already implied by an existing declaration — search directories apply
+where the command composes, permission to clear applies where the command declares
+something clearable, and resume applies where the command produces into a target —
+so a second declaration could only drift from the first.
+
+The framework SHALL NOT reserve an option that decides how much of a command's
+work is performed. Which configuration is used, and whether the framework may
+write where it intends to, are settled before any project code runs and are the
+framework's to own; how far the work proceeds is the project's, and is expressed
+by declaring a command rather than by a framework flag.
+
+#### Scenario: Clearing offered only where something is clearable
+- **WHEN** a command that writes nothing is given the clobber option
+- **THEN** it is refused, naming the command and why the option does not apply
+
+#### Scenario: Help matches the parser
+- **WHEN** a command's help omits an option
+- **THEN** supplying that option is refused rather than silently ignored
+
+#### Scenario: Project options are unaffected
+- **WHEN** a command declares its own options
+- **THEN** they are accepted alongside the applicable framework ones
+
+#### Scenario: No option governs how much work runs
+- **WHEN** a project wants to prepare a run without working it
+- **THEN** it declares a command that does so, rather than passing a framework flag
+
 ### Requirement: Installed command surface
 The framework SHALL provide a command harness a project registers its
 subcommands with, threading each through composition, resolution and the run

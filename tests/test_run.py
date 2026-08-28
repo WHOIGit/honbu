@@ -92,6 +92,8 @@ TRAIN = CommandSpec(
         StepSpec("fit", scope=("training_outputs.checkpoints",)),
         StepSpec("evaluate", scope=("training_outputs.figures",), on_resume="restart"),
     ),
+    # `evaluate` is optional: a trained run is complete without it (D25).
+    completion=("prepare", "fit"),
 )
 
 EVAL = CommandSpec(
@@ -382,8 +384,10 @@ def test_resume_appends_a_resumed_event(tmp_path):
 
 
 def test_resuming_a_completed_run_is_refused(tmp_path):
-    with _open(tmp_path):
-        pass
+    with _open(tmp_path) as run:
+        for name in run.command.required_steps:
+            with run.step(name):
+                pass
     with pytest.raises(RefusalError, match="cannot resume a completed run"):
         with _open(tmp_path, resume=True):
             pass
@@ -581,3 +585,138 @@ def test_a_restart_step_cannot_clear_outside_the_containment_root(tmp_path):
                 pass
 
     assert (outside / "precious.txt").read_text() == "keep"
+
+
+# --------------------------------------------------------------------------- #
+# completion is declared, not assumed (D25)
+# --------------------------------------------------------------------------- #
+
+
+def test_returning_with_required_steps_outstanding_is_partial(tmp_path):
+    """Returning is not completion. Otherwise running part of a stepped command is
+    indistinguishable from running all of it, and lands in the one state that
+    cannot be resumed."""
+    with _open(tmp_path) as run:
+        with run.step("prepare"):
+            pass
+    assert run.manifest.state == "partial"
+    assert run.outstanding_steps() == ("fit",)
+
+
+def test_a_partial_run_is_resumable(tmp_path):
+    with _open(tmp_path) as first:
+        with first.step("prepare"):
+            pass
+    with _open(tmp_path, resume=True) as second:
+        with second.step("fit"):
+            pass
+    assert second.manifest.state == "completed"
+
+
+def test_an_optional_step_does_not_hold_the_run_open(tmp_path):
+    """`evaluate` is declared but outside the required set."""
+    with _open(tmp_path) as run:
+        for name in ("prepare", "fit"):
+            with run.step(name):
+                pass
+    assert "evaluate" not in run.command.required_steps
+    assert run.manifest.state == "completed"
+
+
+def test_a_required_step_may_be_declared_not_applicable(tmp_path):
+    """Satisfied, and recorded with its reason — so deliberate omission and a
+    forgotten branch stay distinguishable."""
+    with _open(tmp_path) as run:
+        with run.step("prepare"):
+            pass
+        run.not_applicable("fit", reason="weights supplied, nothing to train")
+    assert run.manifest.state == "completed"
+    entry = next(
+        e for e in run.manifest.data["timeline"] if e["event"] == "step:fit:not_applicable"
+    )
+    assert entry["reason"] == "weights supplied, nothing to train"
+
+
+def test_a_completed_step_cannot_be_declared_not_applicable(tmp_path):
+    with pytest.raises(RefusalError, match="already completed"):
+        with _open(tmp_path) as run:
+            with run.step("prepare"):
+                pass
+            run.not_applicable("prepare", reason="nope")
+
+
+def test_a_step_completed_in_an_earlier_invocation_still_counts(tmp_path):
+    """Completion asks the manifest, not this process — which is what makes
+    resume-with-skip reach completed at all."""
+    _interrupt_at_epoch_10(tmp_path)
+    with _open(tmp_path, resume=True) as second:
+        for name in ("prepare", "fit"):
+            if second.skip(name):
+                continue
+            with second.step(name):
+                pass
+    assert second.manifest.state == "completed"
+
+
+def test_an_augmenting_command_cannot_un_complete_a_run(tmp_path):
+    """A failed evaluation has not un-trained the run."""
+    with _open(tmp_path) as run:
+        for name in run.command.required_steps:
+            with run.step(name):
+                pass
+    assert run.manifest.state == "completed"
+
+    target = run.run_dir
+    with pytest.raises(ValueError):
+        with _open(tmp_path, command=EVAL, existing_target=target) as augmenting:
+            raise ValueError("evaluation blew up")
+
+    reopened = Manifest.load(target)
+    assert reopened.state == "completed"
+    events = [e["event"] for e in reopened.data["timeline"]]
+    assert "invocation:failed" in events and "error" not in events
+
+
+def test_a_non_advancing_command_leaves_the_state_alone(tmp_path):
+    """The generalization of the augment case: whether running a command is work
+    on the run is declared, not inferred from its mode."""
+    from dataclasses import replace
+
+    prepare = replace(TRAIN, name=("prepare",), steps=(), advances_run=False)
+    resolution = _resolution(tmp_path, command=prepare)
+    with open_run(
+        resolution, composed=COMPOSED, hashes=HASHES, argv_text="prepare"
+    ) as run:
+        pass
+
+    assert run.manifest.state == "initialized"
+    events = [entry["event"] for entry in run.manifest.data["timeline"]]
+    assert events == ["initialized", "invocation:started", "invocation:finished"]
+    assert "started" not in events and "finished" not in events
+
+
+def test_a_prepared_run_is_worked_by_a_later_invocation(tmp_path):
+    from dataclasses import replace
+
+    prepare = replace(TRAIN, name=("prepare",), steps=(), advances_run=False)
+    with open_run(
+        _resolution(tmp_path, command=prepare),
+        composed=COMPOSED,
+        hashes=HASHES,
+        argv_text="prepare",
+    ):
+        pass
+
+    with _open(tmp_path, resume=True) as second:
+        for name in second.command.required_steps:
+            with second.step(name):
+                pass
+    assert second.manifest.state == "completed"
+
+
+def test_augmenting_never_advances_a_run_whatever_is_declared(tmp_path):
+    """Not a project's call: an augmenting command adds to a run someone else
+    produced, so it cannot speak to whether that run's work happened."""
+    from dataclasses import replace
+
+    assert replace(EVAL, advances_run=True).advances_run is False

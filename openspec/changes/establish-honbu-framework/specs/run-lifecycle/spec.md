@@ -40,9 +40,12 @@ the run-directory template, and SHALL own only the leaves it declared.
 ### Requirement: Fixed resolution phase order
 Resolution SHALL proceed in a fixed, documented phase order: validate the composed
 configuration; resolve input paths; compute config-only hashes for the active
-command; assign identities derived from those hashes; render the command's target
-template; resolve output leaves against the target; revalidate. No phase SHALL
-depend on a later phase.
+command; assign identities derived from those hashes; render template-valued fields;
+render the command's target template; resolve output leaves against the target;
+revalidate. No phase SHALL depend on a later phase.
+
+Template-valued fields SHALL render before the target, so an output directory may
+reference one.
 
 #### Scenario: Identity feeds a path template
 - **WHEN** a target template references a configuration identity
@@ -295,6 +298,10 @@ steps already recorded complete.
 - **WHEN** a run directory holds a persisted configuration and no work has run
 - **THEN** resuming it starts the first step rather than refusing
 
+#### Scenario: Resuming a partial run
+- **WHEN** a run left partial by a previous invocation is resumed
+- **THEN** its outstanding required steps run and the run reaches completed
+
 #### Scenario: Resuming a completed run
 - **WHEN** resume is requested against a completed run
 - **THEN** it is refused, and starting from the same configuration is offered
@@ -325,11 +332,14 @@ mutation, so an interrupted run still carries a useful record.
 - **THEN** the manifest records the failure and the provenance bundle remains
 
 ### Requirement: Run states derived from the timeline
-The manifest SHALL carry one of five states — initialized, running, completed,
-interrupted, failed — where interrupted means stopped by an external signal and
-failed means work raised. The state SHALL always be derived from the last reserved
-timeline event and never written independently. A project MAY append its own
-timeline events but SHALL NOT write reserved event names or the state.
+The manifest SHALL carry one of six states — initialized, running, partial,
+completed, interrupted, failed — where interrupted means stopped by an external
+signal, failed means work raised, and partial means work returned cleanly with
+required steps outstanding. The state SHALL always be derived from the last
+reserved timeline event and never written independently. A project MAY append its
+own timeline events but SHALL NOT write reserved event names or the state.
+
+Every state but completed SHALL be resumable.
 
 #### Scenario: Interrupted versus failed
 - **WHEN** a run is stopped by a signal and another raises an exception
@@ -338,6 +348,101 @@ timeline events but SHALL NOT write reserved event names or the state.
 #### Scenario: Project event
 - **WHEN** a project records a domain event
 - **THEN** it appears on the timeline and the state is unchanged
+
+### Requirement: A producing command declares what completion means
+A producing command SHALL declare which of its steps constitute a complete run,
+defaulting to all of them. On a work function returning normally, the run SHALL be
+recorded completed when every required step is recorded complete, and partial
+otherwise.
+
+Returning SHALL NOT by itself mean completion. Treating it as completion makes
+running part of a stepped command indistinguishable from running all of it, leaves
+a deliberately partial run in the one state that cannot be resumed, and forces a
+framework flag to exist for the single case of doing no work at all.
+
+A project declaring an optional step SHALL be able to omit it from the required
+set, so an unrun evaluation does not hold a trained run open forever.
+
+A required step MAY instead be declared **not applicable** to a particular run,
+with a reason, and SHALL then count as satisfied. This exists so that silence keeps
+meaning something is wrong: a step that neither ran nor was declared inapplicable
+leaves the run partial, which makes forgetting loud and makes deliberate omission
+recorded and auditable. Permanently removing such a step from the required set
+would instead make both cases silent and identical.
+
+A step already recorded complete SHALL NOT be declarable not applicable, and a step
+SHALL be counted satisfied when it is recorded complete in *any* invocation of the
+run, not merely the current one.
+
+Completion describes the **run**, not the invocation: a step recorded complete by
+one command counts for the run regardless of which command recorded it.
+
+#### Scenario: All required steps ran
+- **WHEN** a work function returns having completed every required step
+- **THEN** the run is recorded completed
+
+#### Scenario: Some required steps outstanding
+- **WHEN** a work function returns having completed only its first step
+- **THEN** the run is recorded partial and remains resumable
+
+#### Scenario: Optional step never ran
+- **WHEN** a command declares a step outside its required set and does not run it
+- **THEN** the run is still recorded completed
+
+#### Scenario: Required step declared not applicable
+- **WHEN** work declares a required step not applicable to this run, with a reason
+- **THEN** the run reaches completed and the timeline records the omission and its
+  reason
+
+#### Scenario: Required step silently missing
+- **WHEN** a required step neither runs nor is declared not applicable
+- **THEN** the run is recorded partial, so forgetting is distinguishable from
+  deliberate omission
+
+#### Scenario: Step satisfied by an earlier invocation
+- **WHEN** a step recorded complete in a previous invocation is skipped on resume
+- **THEN** it still counts toward completion
+
+### Requirement: A command declares whether running it advances the run
+A command SHALL declare whether its execution constitutes work on the run. One that
+does SHALL record the lifecycle events and reach completed or partial as above. One
+that does not SHALL record its own timeline events and its own failure, and SHALL
+leave the run's state exactly as it found it. An augmenting command SHALL never
+advance a run.
+
+This SHALL be a declaration of whether, not of which state. Because a state is
+always derived from the last reserved timeline event, a command naming a target
+state would either break that derivation or require an event per nameable state —
+and would let a command that performed no work declare the run complete.
+
+Two shapes follow. A command that prepares a run for later work declares no steps
+and does not advance it, so the run is left initialized and stays resumable —
+which is why no framework option is needed to prepare a run in advance. And a
+failed augmentation cannot un-complete a run: a failed evaluation of a finished
+training run has not un-trained it, and recording the run failed would destroy the
+fact that its artifacts are complete and usable.
+
+#### Scenario: Preparing a run without working it
+- **WHEN** a command that does not advance the run creates a run directory and
+  returns
+- **THEN** the run is left initialized, resumable, with no claim that work occurred
+
+#### Scenario: Augmenting a completed run
+- **WHEN** an augmenting command succeeds against a completed run
+- **THEN** the run remains completed and its timeline records the invocation
+
+#### Scenario: Augmentation fails
+- **WHEN** an augmenting command raises against a completed run
+- **THEN** the failure is recorded and the run remains completed
+
+#### Scenario: Augmenting twice against different outputs
+- **WHEN** a run is evaluated twice against different inputs, each writing its own
+  templated leaf
+- **THEN** both results are kept and the run remains completed
+
+#### Scenario: A non-advancing command cannot claim completion
+- **WHEN** a command that does not advance the run runs to completion
+- **THEN** no lifecycle state event is recorded for it
 
 ### Requirement: The project owns what counts as best
 The framework SHALL record a best result supplied by the project — its epoch,

@@ -306,10 +306,11 @@ pull model, the order is a **fixed list Honbu owns**:
   1 validate composed → RootConfig
   2 resolve input paths to absolute
   3 compute config-only hashes         (filtered to the command's declared set)
-  4 assign identities from hashes      (config_hash, config_id, domain ids)
-  5 render the command's target template
-  6 resolve output leaves against the target directory
-  7 revalidate
+  4 assign identities from hashes      (digests into the fields declaring them)
+  5 render template-valued fields       (so the target may reference them)
+  6 render the command's target template
+  7 resolve output leaves against the target directory
+  8 revalidate
 ```
 
 It holds for every case in both projects, including the one that nearly breaks it:
@@ -730,9 +731,18 @@ names it.
 
 ### D23 — A sweep's state is derived from its children's manifests
 
-The sweep directory holds an **immutable index** of prepared children. It holds no
-progress. A child's state is its own `manifest.json`, and the sweep's state is the
-aggregate — so the driver holds nothing, and killing it loses nothing.
+The sweep manifest has two zones. The **index** of prepared children is immutable
+after preparation. The **progress** zone is a *cache*: a child's state is its own
+`manifest.json`, the sweep's state is the aggregate, and every cached value is
+rebuildable by rescanning. So the driver holds no authoritative state, and killing
+it loses nothing.
+
+The cache earns its place by being readable without running anything — `cat` the
+file and see 8/12. It pays for that with a stale-read hazard that has to be made
+visible rather than papered over: a child run by a Slurm array updates its own
+manifest and nothing else, so the zone carries the time it was last refreshed, and
+anything reporting sweep state refreshes first. A count with no timestamp would
+assert currency it does not have.
 
 Preparation materializes every child up front: expand the matrix, resolve each
 combination, check the gate, then write each child's run directory in the
@@ -754,6 +764,176 @@ manifest, so the index and the states cannot disagree. This also settles run
 discovery for sweeps — the index names its children and reporting never scans
 directories, which is what keeps a half-deleted run from silently vanishing from a
 report.
+
+### D24 — Three axis kinds, one dimension each; no conflict policy
+
+The sweep block is `gate` plus `axes` plus `covariant_axes`. Every axis contributes
+exactly one dimension, whatever its kind, so the child count is always the product
+of the declared lengths and never depends on how many *paths* an axis touches.
+
+Three kinds, and the split is a constraint rather than taste:
+
+* an **ordinary axis** maps one dotted path to values;
+* a **group axis** is an ordinary axis whose values name configuration-group
+  options, so one value carries a whole file;
+* a **covariant axis** maps a label to options, each assigning several paths at
+  once.
+
+Group and covariant axes overlap in effect — both set many fields per option — but
+not in reach. **A group file's package path is static.** A group targeting
+`model.heads.species.network` would need `# @package model.heads.species` baked in,
+hardcoding a key the *configuration* chose, so it could never be reused for another
+head. Everything below a configuration-keyed container is therefore reachable only
+by a path or covariant axis. Conversely a group option is a committed, reusable,
+diffable file, which a sweep-local mapping is not. Neither subsumes the other.
+
+Two path checks, because each catches what the other cannot. The schema check
+traverses a mapping wherever the next segment is a concrete key, which is what makes
+`model.heads.species.network.hidden_dims` checkable at all; but `dict[str, Head]`
+admits *any* key, so a misspelled head name passes it. The data check — is this
+concrete key present in the composed configuration — catches that, and is a dict
+lookup at preparation. Verified against the demo schema: a typo in the leaf fails
+the first, a typo in the head name fails only the second.
+
+**No `conflict_policy`.** The sibling design offered `default` (the axis wins) and
+`strict` (refuse if the swept path is set anywhere else). Only `default` survives,
+and it is behavior rather than a knob, because `strict` fails three ways: it is
+incompatible with group axes, whose package path is *always* set by the base
+defaults list; the misspelling it chiefly guarded is caught precisely by axis-path
+validation; and its remedy pressures an author to delete a base default that is
+meaningful when the configuration runs alone. What replaces it is information — one
+warning per displaced axis, not per child. The same posture that retired `--force`:
+describe what is happening rather than demand a flag.
+
+An override contesting a swept path is refused rather than silently losing. It
+would otherwise be a no-op, since the axis assigns that path per child regardless,
+and a no-op that looks like an instruction is worse than an error.
+
+### D25 — The project declares what completion means; Honbu reserves less
+
+Four changes with one root cause. `open_run` recorded `finished` unconditionally
+on normal return, so **"the work function returned" meant "the run is complete."**
+That single conflation produced a missing capability and a live bug, and forced a
+reserved flag to exist as a special case.
+
+**Completion is declared, not assumed.** A producing command names the steps that
+constitute a complete run, defaulting to every step it declares. On normal return,
+all of them recorded complete gives `completed`; anything less gives **`partial`**,
+a sixth state that joins the resumable set. A project with an optional `evaluate`
+step narrows the set so an unrun evaluation does not hold the run open.
+
+**A command declares whether running it is work on the run.** The question is not
+"what state does this command set" but whether its execution advances the run at
+all. A command that does not advance it records its own timeline events, and the
+run's state is left exactly where it was found.
+
+That covers three shapes with one declaration. An augmenting command never
+advances a run — which fixes a real defect, not a refinement: `open_run` recorded
+`started` and `finished` for augmenting commands too, so evaluating a finished run
+flipped it to `running` and back, and a *failed* evaluation recorded `failed`,
+erasing that training had completed. A **preparing** command — create the
+directory now, work it in tonight's allocation — does not advance it either, so it
+declares no steps and leaves the run `initialized`, which is what the manifest
+already held. And an ordinary working command advances it, with completion derived
+from its declared steps.
+
+This is deliberately a boolean rather than a nameable target state. States are
+derived from the last reserved timeline event and never written independently,
+which is what keeps the state and the timeline from disagreeing; letting a command
+*name* a state would either break that or require an event per nameable state. It
+would also let a command that ran nothing declare itself `completed`, reintroducing
+the exact lie this decision removes. A boolean cannot express that.
+
+The narrowing is worth stating: `partial` now means only *a working command
+returned with required steps outstanding*, and no longer doubles as "a command that
+never intended to work this run." An earlier draft of this decision forced a
+preparing command to declare the working command's steps just to land on `partial`,
+and needed a spec rule saying so — a symptom whose cause this removes.
+
+**`--init` is removed.** It was the only reserved flag that decided *how much
+project work happens*, rather than acting before or around project code — the
+other six settle which configuration is used and whether Honbu may write where it
+wants, all before any project code runs. That is the line, and `--init` was its
+only crossing. With `partial`, the capability needs no flag at all: a project
+declares its own `prepare` command whose handler opens the run and runs no steps,
+naming it whatever it likes. `initialize_run()` survives as a function, because
+sweep preparation genuinely needs it (D23) and that is Honbu's own code rather than
+a user-facing surface. Removing the flag also frees the word `init` for the
+near-universal "scaffold a project here" meaning.
+
+**Flag applicability is derived, never registered.** The behavior flags were
+accepted on every command and filtered only in help, so help and the parser
+disagreed: `inspect config` advertised neither `--clobber` nor `--resume` while the
+parser silently accepted both, and a typo produced silence instead of an error.
+Every one of them is already implied by an existing declaration — `--config-dir`
+applies where the command composes, `--clobber` where it can clear something,
+`--resume` where it produces into a target — so a second declaration would only
+create something to drift from the first. Derivation also makes help a description
+of behavior rather than a parallel opinion about it. This is D12's move again: the
+declaration supplies the radius, the flag supplies only permission.
+
+### D26 — Comparison is levelled, and the levels are the markers
+
+Comparing two configurations is not one question, it is four, and the framework
+already has the vocabulary for all of them: `literal` compares everything,
+`authored` strips resolved-only fields, `behavioral` strips everything the markers
+exclude from behavioral sources, and `by_hash` attributes each difference to the
+declared hashes it would move.
+
+`behavioral` is the valuable one and it is nearly free — it is exactly the
+projection a digest already sees, so it is `excluded_source_paths()` and nothing
+new. It also gives a definition to a term the sweep spec already used without one:
+a **residual difference** is one that appears at `literal` and vanishes at
+`behavioral`. Run comparison is therefore this operation with runs as operands, and
+must share the implementation rather than growing a second diff.
+
+Availability follows from inputs — bare mappings get `literal`, a root type unlocks
+`authored` and `behavioral`, a hash registry unlocks `by_hash` — and an unavailable
+level is refused rather than downgraded. A comparison that quietly answered a
+weaker question than the one asked would be worse than none.
+
+The one honest limit is `by_hash`. Attribution works by asking whether a differing
+path falls inside a field-selected hash's include set, which is decidable; verified
+against the demo, `model.backbone` moves `config_hash`, `training_outputs.dir_template`
+moves nothing declared, and `runtime.run_id` is marker-excluded from every digest.
+But a hash whose source a *callable* builds cannot be attributed statically, and an
+input-reading one cannot be run at comparison time at all. Those are reported
+**opaque** — neither implicated nor cleared. Omitting them would imply a
+completeness the analysis lacks, and "moves no identity" versus "moves no identity
+I can see" support different decisions.
+
+### D27 — Materialization takes its closure from the compositor, not from a parser
+
+Packaged defaults already work on the read side: `ComposeSpec.packaged` composes
+from an installed package and the local directory shadows it per group. What was
+missing is the write side — getting that content into a working tree so it can be
+edited.
+
+The mechanism is a closure over declared roots, and the closure comes from the
+compositor's **own record of what it selected** (`hydra.runtime.choices`), not from
+re-parsing defaults lists. Verified: composing with the Hydra config returned gives
+`{'heads': 'species_only', ...}` — the exact group→option map, transitive, with the
+compositor's internal groups distinguishable by prefix. Re-implementing defaults-list
+resolution would be a second copy of the selection rules, and its drift would be
+silent in the worst way: the copied tree would compose differently from the packaged
+tree it was copied from.
+
+Scope *names* are the project's — `--minimal`, `--supervised`, `--ssl` are dojo's
+vocabulary, and Honbu ships none, exactly as it ships no step names. What Honbu owns
+is closure, planning, and the create/skip/overwrite discipline. Non-configuration
+resources are materializable too, because a starter configuration pointing at a
+fixture dataset is only useful if the dataset arrives with it.
+
+Materialization never deletes. Deciding a local file is obsolete requires knowing
+whether a human edited it, which the framework cannot know — so it adds, and
+divergence is answered by *comparison* (D26) rather than by a lockfile. That is the
+better answer anyway: it reports what differs rather than merely that something did.
+It also finally answers a question the framework has been carrying unanswered, since
+continuing a run reapplies schema defaults at continuation time and a default that
+moved is otherwise picked up silently.
+
+No command name is reserved, for the same reason no option governing how much work
+runs is reserved (D25): reserving a name is the same imposition by another route.
 
 ## Risks / Trade-offs
 

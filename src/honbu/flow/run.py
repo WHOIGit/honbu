@@ -277,6 +277,30 @@ class Run:
                 pass
         self.manifest.record_artifact(name, candidate)
 
+    def not_applicable(self, step: str, *, reason: str) -> None:
+        """Declare a required step does not apply to this run, with a reason.
+
+        Counts as satisfied, so the run can still complete — but it is *recorded*,
+        which is the whole point. Permanently dropping such a step from the required
+        set would make "correctly disabled this time" and "a branch nobody meant to
+        take" both silent and identical; this way silence still means something is
+        wrong, and deliberate omission carries its reason on the timeline.
+        """
+        self.command.step(step)  # refuse an undeclared name
+        if step in self.manifest.completed_steps():
+            raise RefusalError(
+                f"step {step!r} already completed in this run; it cannot be declared "
+                "not applicable"
+            )
+        self.manifest.record_event(f"step:{step}:not_applicable", reason=reason)
+
+    def outstanding_steps(self) -> tuple[str, ...]:
+        """Required steps neither completed nor declared inapplicable."""
+        satisfied = self.manifest.satisfied_steps()
+        return tuple(
+            name for name in self.command.required_steps if name not in satisfied
+        )
+
     def record_identity(self, name: str, value: Any) -> None:
         self.manifest.record_identity(name, value)
 
@@ -397,6 +421,25 @@ def open_run(
         parent=parent,
     )
     manifest = run.manifest
+
+    if not resolution.command.advances_run:
+        # The invocation records itself and nothing about the run's state. Two
+        # shapes share this branch: a command preparing a run for later work, which
+        # leaves it initialized, and an augmenting command, which adds to a run
+        # someone else produced. A failed evaluation has not un-trained a run, and
+        # recording `failed` would destroy the fact that its artifacts are complete.
+        manifest.record_event("invocation:started")
+        try:
+            yield run
+        except BaseException as exc:
+            manifest.record_event(
+                "invocation:failed", kind=type(exc).__name__, message=str(exc)
+            )
+            raise
+        else:
+            manifest.record_event("invocation:finished")
+        return
+
     manifest.record_lifecycle_event("resumed" if resume else "started")
     try:
         yield run
@@ -411,7 +454,7 @@ def open_run(
         )
         raise
     else:
-        manifest.record_completion()
+        manifest.record_outcome(outstanding=run.outstanding_steps())
 
 
 def _prepare(

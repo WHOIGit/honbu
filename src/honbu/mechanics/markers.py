@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from types import UnionType
@@ -176,6 +177,149 @@ def traversable_submodel(annotation: Any) -> type[BaseModel] | None:
     """
     direct = [model for steps, model in _descend(annotation) if not steps]
     return direct[0] if len(direct) == 1 else None
+
+
+def container_element_model(annotation: Any) -> tuple[type[BaseModel] | None, str]:
+    """The model a container's entries are, and whether it is keyed or indexed.
+
+    Returns ``(None, "")`` when the annotation is not a container of models. The
+    kind matters to the caller, not here: a mapping step consumes a *key* the
+    configuration chose, a sequence step consumes an *index*, and the two are
+    checked against composed data differently.
+    """
+    annotation = _unwrap(annotation)
+    origin, args = get_origin(annotation), get_args(annotation)
+    if origin in (Union, UnionType):
+        for arg in args:
+            if arg is type(None):
+                continue
+            model, kind = container_element_model(arg)
+            if model is not None:
+                return model, kind
+        return None, ""
+    if origin in (dict, Mapping) and len(args) == 2:
+        return traversable_submodel(args[1]), "key"
+    if origin in (list, tuple, Sequence):
+        for arg in args:
+            if arg is Ellipsis:
+                continue
+            return traversable_submodel(arg), "index"
+    return None, ""
+
+
+@dataclass(frozen=True)
+class PathProblem:
+    """Why a dotted path is not addressable. ``segment`` names the offending step."""
+
+    path: str
+    segment: str
+    kind: str  # "unknown_field" | "not_traversable" | "missing_key" | "bad_index"
+    message: str
+
+
+def check_field_path(
+    model_cls: type[BaseModel],
+    dotted: str,
+    *,
+    data: Mapping[str, Any] | None = None,
+    traverse_containers: bool = False,
+) -> PathProblem | None:
+    """Whether ``dotted`` addresses a real field. Returns None when it does.
+
+    Two checks in one traversal, because they are not separable: the *data* check
+    only applies at container steps, and only the schema walk knows which segments
+    those are.
+
+    The schema check alone is not enough wherever a container is involved. A
+    ``dict[str, Head]`` admits any key, so ``model.heads.speces.network.dropout``
+    passes it and would go on to fabricate a head named ``speces`` — surfacing much
+    later as a per-child validation failure, which is the wrong error in the wrong
+    place. Supplying ``data`` (the composed configuration) catches it here.
+
+    The data check alone is not enough either: a leaf may be schema-defaulted and
+    legitimately absent from the composed tree, so presence is required *only* at
+    container steps, never at ordinary fields.
+
+    ``traverse_containers`` is False for declarations that must name a whole
+    container — a hash's include set, a command's write scope — and True for sweep
+    axes, which legitimately address one entry of a mapping the configuration keyed.
+    """
+    segments = parse_dotted(dotted, allow_index=traverse_containers)
+    current: type[BaseModel] | None = model_cls
+    node: Any = data
+    index = 0
+
+    while index < len(segments):
+        segment = segments[index]
+        if current is None:
+            return PathProblem(
+                dotted, segment, "not_traversable",
+                f"{dotted!r}: cannot traverse into {segment!r}",
+            )
+        info = getattr(current, "model_fields", {}).get(segment)
+        if info is None:
+            return PathProblem(
+                dotted, segment, "unknown_field",
+                f"{dotted!r}: {current.__name__} has no field {segment!r}",
+            )
+        if node is not None:
+            node = node.get(segment) if isinstance(node, Mapping) else None
+        if index == len(segments) - 1:
+            return None
+
+        element, kind = container_element_model(info.annotation)
+        if element is None:
+            current = traversable_submodel(info.annotation)
+            index += 1
+            continue
+
+        if not traverse_containers:
+            return PathProblem(
+                dotted, segment, "not_traversable",
+                f"{dotted!r}: {segment!r} is a container; name the container itself",
+            )
+
+        index += 1
+        entry = segments[index]
+        if data is not None:
+            problem = _check_entry(dotted, segment, entry, kind, node)
+            if problem is not None:
+                return problem
+            node = node[int(entry)] if kind == "index" else node[entry]
+        if index == len(segments) - 1:
+            return None
+        current = element
+        index += 1
+
+    return None
+
+
+def _check_entry(
+    dotted: str, container: str, entry: str, kind: str, node: Any
+) -> PathProblem | None:
+    """Confirm a concrete container entry exists in the composed configuration."""
+    if kind == "index":
+        if not entry.lstrip("-").isdigit():
+            return PathProblem(
+                dotted, entry, "bad_index",
+                f"{dotted!r}: {container!r} is a sequence, so {entry!r} must be an index",
+            )
+        if not isinstance(node, (list, tuple)) or not -len(node) <= int(entry) < len(node):
+            available = len(node) if isinstance(node, (list, tuple)) else 0
+            return PathProblem(
+                dotted, entry, "missing_key",
+                f"{dotted!r}: {container!r} has {available} entries, so index "
+                f"{entry} is out of range",
+            )
+        return None
+    if not isinstance(node, Mapping) or entry not in node:
+        available = ", ".join(sorted(map(str, node))) if isinstance(node, Mapping) else ""
+        return PathProblem(
+            dotted, entry, "missing_key",
+            f"{dotted!r}: {container!r} has no entry {entry!r}"
+            + (f"; it has: {available}" if available else ""),
+        )
+    return None
 
 
 def _walk(
@@ -365,10 +509,22 @@ def dotted(path: FieldPath) -> str:
 _IDENTIFIER_SEGMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def parse_dotted(value: str) -> FieldPath:
-    """Parse a declared dotted path, rejecting anything that is not field names."""
+_INDEX_SEGMENT = re.compile(r"-?[0-9]+$")
+
+
+def parse_dotted(value: str, *, allow_index: bool = False) -> FieldPath:
+    """Parse a declared dotted path, rejecting anything that is not field names.
+
+    ``allow_index`` additionally permits a purely numeric segment, for paths that
+    address a sequence entry. Off by default: a hash's include set and a command's
+    scope are pruned and traversed by field name, and a numeric segment there would
+    silently match nothing.
+    """
     segments = tuple(value.split("."))
     for segment in segments:
-        if not _IDENTIFIER_SEGMENT.match(segment):
-            raise ValueError(f"{value!r} is not a dotted field path")
+        if _IDENTIFIER_SEGMENT.match(segment):
+            continue
+        if allow_index and _INDEX_SEGMENT.match(segment):
+            continue
+        raise ValueError(f"{value!r} is not a dotted field path")
     return segments

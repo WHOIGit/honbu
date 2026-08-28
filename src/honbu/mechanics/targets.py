@@ -32,7 +32,9 @@ from honbu.mechanics.io import read_json
 MANIFEST_NAME = "manifest.json"
 
 #: States from which an occupied directory may be resumed rather than cleared.
-RESUMABLE_STATES = frozenset({"initialized", "running", "interrupted", "failed"})
+RESUMABLE_STATES = frozenset(
+    {"initialized", "running", "partial", "interrupted", "failed"}
+)
 
 _DESCRIBE_LIMIT = 5
 
