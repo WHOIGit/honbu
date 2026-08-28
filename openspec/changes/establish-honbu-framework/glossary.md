@@ -48,6 +48,12 @@ record.
 Orthogonal to origin: not every hash warrants an identity, and not every identity
 derives from a hash. A fresh `run_id` derives from nothing.
 
+**Directive** — an authored field the work does not read: an instruction to the
+framework about how runs are generated. Excluded from every digest by its marker,
+like a path or a derived identity, but on different grounds — those are claims
+about where a value came from, this one about who reads it. The sweep block is the
+first (D28).
+
 **Deferred hash** — a hash declared as reading inputs, and therefore always computed
 after resolution rather than during it, whether or not its inputs happen to be
 present. Declared, not discovered, so the deferred set is the same on every machine.
@@ -177,11 +183,18 @@ children through it and never scans directories.
 and writing every child directory in the `initialized` state, running nothing.
 
 **`sweep_id`** — an identity for one sweep. Assigned, never authored, and excluded
-from every digest so membership cannot alter a child's identity.
+from every digest so membership cannot alter a child's identity. Derived from the
+sweep's **directory**, not its definition, which is what lets a sweep be added to:
+growing an axis extends the sweep rather than naming a new one.
 
 **`sweep_hash`** — a digest over the sweep's definition — base configuration and
 axes — under the standard exclusions, so two sweeps differing only in output
-location share one.
+location share one. Unlike the identity, it is *meant* to change when the
+definition does. Collapsing the two makes every edit a new sweep.
+
+**Retired child** — one whose axis value the current definition no longer covers.
+Kept in the index and marked, never deleted: it may hold results, and an index that
+stopped mentioning it would leave its directory unreferenced.
 
 ## Words this project deliberately does not use
 

@@ -20,15 +20,24 @@ from honbu import (
 )
 from honbu.capabilities import (
     SweepBlock,
+    SweepDeclaration,
+    check_root_declares_sweep,
+    axis_displacement_warnings,
     axis_kind,
+    check_axis_paths,
+    check_no_group_is_shadowed,
+    check_no_override_contests_an_axis,
+    check_no_path_claimed_twice,
     expand,
     normalize_axes,
+    normalize_covariant_axes,
+    override_key,
+    plan_sweep,
     sweep_axes,
     sweep_block_of,
     sweep_definition_digest,
     without_sweep_block,
 )
-from honbu.capabilities.sweep import normalize_covariant_axes
 
 
 class Network(StrictModel):
@@ -64,7 +73,7 @@ class Root(StrictModel):
     epochs: int = 10
     output_root: PortablePath = Path("./runs")
     outputs: Outputs = Field(default_factory=Outputs)
-    sweep: SweepBlock = Field(default_factory=SweepBlock)
+    sweep: SweepDeclaration = Field(default_factory=SweepBlock)
 
 
 BASE = {
@@ -310,3 +319,317 @@ def test_the_flat_and_nested_spellings_of_one_sweep_share_a_definition_digest():
         BASE, root_type=Root, block=block(axes={"model": {"backbone": ["a", "b"]}})
     )
     assert flat == nested
+
+
+# --- well-formedness ---------------------------------------------------------
+
+
+def test_a_covariant_axis_omitting_a_path_its_siblings_assign_is_refused():
+    """A hole wearing the shape of an axis.
+
+    The omitted path does not fail — it silently inherits the base, so one point of
+    the diagonal is quietly not on it.
+    """
+    with pytest.raises(RefusalError, match="omits") as caught:
+        normalize_covariant_axes(
+            {"arch": [{"model.backbone": "a", "epochs": 1}, {"model.backbone": "b"}]}
+        )
+    assert "epochs" in str(caught.value)
+
+
+def test_a_covariant_option_adding_a_path_its_siblings_lack_is_refused():
+    with pytest.raises(RefusalError, match="adds"):
+        normalize_covariant_axes(
+            {"arch": [{"model.backbone": "a"}, {"model.backbone": "b", "epochs": 1}]}
+        )
+
+
+def test_a_single_option_covariant_axis_is_refused_as_a_constant():
+    with pytest.raises(RefusalError, match="at least two") as caught:
+        normalize_covariant_axes({"arch": [{"model.backbone": "a", "epochs": 1}]})
+    assert "base configuration" in str(caught.value)
+
+
+def test_an_empty_covariant_axis_is_refused_too():
+    with pytest.raises(RefusalError, match="at least two"):
+        normalize_covariant_axes({"arch": []})
+
+
+def test_one_path_spelled_two_ways_is_caught_at_normalization():
+    """A mapping cannot hold one key twice, so the flat and nested spellings are the
+    only way to declare an ordinary axis's path twice — and they meet after
+    normalization, not before."""
+    with pytest.raises(RefusalError, match="declared twice"):
+        normalize_axes({"model.backbone": ["a", "b"], "model": {"backbone": ["c"]}})
+
+
+def test_two_axes_claiming_one_path_are_refused():
+    axes = (
+        *axes_of(block(axes={"epochs": [1, 2]})),
+        *axes_of(block(axes={"epochs": [3, 4]})),
+    )
+    with pytest.raises(RefusalError, match="claimed by two axes"):
+        check_no_path_claimed_twice(axes)
+
+
+def test_an_axis_and_a_covariant_axis_claiming_one_path_are_refused():
+    """The rule holds across kinds, which is the easier defect to write by accident."""
+    axes = axes_of(
+        block(
+            axes={"epochs": [10, 20]},
+            covariant_axes={
+                "arch": [
+                    {"model.backbone": "a", "epochs": 1},
+                    {"model.backbone": "b", "epochs": 2},
+                ]
+            },
+        )
+    )
+    with pytest.raises(RefusalError, match="claimed by two axes") as caught:
+        check_no_path_claimed_twice(axes)
+    assert "'epochs'" in str(caught.value)
+    assert "arch" in str(caught.value)
+
+
+# --- path validation ---------------------------------------------------------
+
+
+def test_a_misspelled_leaf_fails_the_schema_check():
+    axes = axes_of(block(axes={"model.backbon": ["a", "b"]}))
+    with pytest.raises(RefusalError, match="fails the schema check"):
+        check_axis_paths(axes, root_type=Root, composed=BASE)
+
+
+def test_a_misspelled_container_key_fails_only_the_configuration_check():
+    """The schema admits any key of a mapping, so this one gets past it.
+
+    Left to a child it would fabricate a head named ``speces`` and surface as a
+    per-child validation failure — the wrong error in the wrong place.
+    """
+    axes = axes_of(block(axes={"model.heads.speces.classes": [4, 8]}))
+    with pytest.raises(RefusalError, match="fails the configuration check"):
+        check_axis_paths(axes, root_type=Root, composed=BASE)
+
+
+def test_a_path_descending_through_a_concrete_container_key_validates():
+    axes = axes_of(block(axes={"model.heads.species.network.dropout": [0.1, 0.5]}))
+    check_axis_paths(axes, root_type=Root, composed=BASE)
+
+
+def test_a_bad_path_refuses_rather_than_preparing_zero_children():
+    """Skipping is for a combination a validator rejects, not for a spoiled sweep."""
+    bl = block(axes={"model.backbon": ["a", "b"]})
+    with pytest.raises(RefusalError):
+        plan_sweep(bl, root_type=Root, composed=BASE)
+
+
+# --- overrides contesting an axis --------------------------------------------
+
+
+def test_override_key_strips_every_prefix_form():
+    assert override_key("epochs=10") == "epochs"
+    assert override_key("+new.key=2") == "new.key"
+    assert override_key("++forced=1") == "forced"
+    assert override_key("~old.key") == "old.key"
+
+
+def test_an_override_assigning_a_swept_path_is_refused_with_the_axis_form():
+    axes = axes_of(block(axes={"epochs": [10, 20]}))
+    with pytest.raises(RefusalError, match="already sweeps") as caught:
+        check_no_override_contests_an_axis(axes, ["epochs=40"])
+    assert "sweep.axes.epochs=[...]" in str(caught.value)
+
+
+def test_a_contested_covariant_path_is_redirected_to_the_covariant_form():
+    axes = axes_of(
+        block(
+            covariant_axes={
+                "arch": [
+                    {"model.backbone": "a", "epochs": 1},
+                    {"model.backbone": "b", "epochs": 2},
+                ]
+            }
+        )
+    )
+    with pytest.raises(RefusalError) as caught:
+        check_no_override_contests_an_axis(axes, ["model.backbone=c"])
+    assert "sweep.covariant_axes.arch=[...]" in str(caught.value)
+
+
+def test_an_override_below_a_swept_group_is_refused_because_a_group_merges():
+    """The substantive case: it survives every selection and leaks into all children."""
+    axes = axes_of(block(axes={"data": ["nes-hf", "nes-raw"]}))
+    with pytest.raises(RefusalError, match="already sweeps"):
+        check_no_override_contests_an_axis(axes, ["data.split=val"])
+
+
+def test_an_override_outside_the_swept_set_applies_to_every_child():
+    axes = axes_of(block(axes={"epochs": [10, 20]}))
+    check_no_override_contests_an_axis(axes, ["experiment.name=other", "output_root=/x"])
+
+
+def test_an_override_redefining_the_sweep_is_not_refused():
+    axes = axes_of(block(axes={"epochs": [10, 20]}))
+    check_no_override_contests_an_axis(axes, ["sweep.axes.epochs=[1,2]", "sweep.gate=x"])
+
+
+# --- the axis-wins warning ---------------------------------------------------
+
+
+def test_an_axis_displacing_a_base_value_warns_and_names_what_it_displaced():
+    axes = axes_of(block(axes={"epochs": [10, 20]}))
+    (warning,) = axis_displacement_warnings(axes, BASE)
+    assert "'epochs'" in warning and "10" in warning
+
+
+def test_an_axis_the_base_does_not_set_warns_about_nothing():
+    axes = axes_of(block(axes={"model.heads.species.network.dropout": [0.1, 0.5]}))
+    assert axis_displacement_warnings(axes, BASE) == ()
+
+
+def test_the_warning_is_emitted_once_per_axis_not_once_per_child():
+    """A sweep of two hundred children must not bury it under two hundred copies."""
+    bl = block(axes={"epochs": list(range(100)), "model.backbone": ["a", "b"]})
+    plan = plan_sweep(bl, root_type=Root, composed=BASE)
+    assert len(plan) == 200
+    assert len(plan.warnings) == 2
+
+
+# --- a group shadowed by the base configuration ------------------------------
+
+
+def test_a_group_the_base_also_supplies_directly_is_refused():
+    """A group is merged, not substituted, so the child gets the union.
+
+    The check needs composition: after composing, the package path holds the merged
+    product and carries no record of where each key came from.
+    """
+    axes = axes_of(block(axes={"data": ["nes-hf", "nes-raw"]}))
+
+    def compose_without(group):
+        assert group == "data"
+        return {**BASE, "data": {"split": "train"}}
+
+    with pytest.raises(RefusalError, match="merged rather than substituted") as caught:
+        check_no_group_is_shadowed(axes, compose_without=compose_without)
+    assert "split" in str(caught.value)
+
+
+def test_a_group_the_base_leaves_alone_passes():
+    axes = axes_of(block(axes={"data": ["nes-hf", "nes-raw"]}))
+    check_no_group_is_shadowed(axes, compose_without=lambda group: {**BASE, "data": {}})
+
+
+def test_the_shadow_check_is_skipped_when_no_compositor_is_supplied():
+    """A sweep can be planned against a configuration dict alone."""
+    plan = plan_sweep(block(axes={"data": ["nes-hf", "nes-raw"]}), root_type=Root, composed=BASE)
+    assert len(plan) == 2
+
+
+# --- the plan ----------------------------------------------------------------
+
+
+def test_a_plan_carries_the_expansion_the_warnings_and_the_digest():
+    bl = block(gate="runtime.config_id", axes={"epochs": [10, 20], "model.backbone": ["a", "b"]})
+    plan = plan_sweep(bl, root_type=Root, composed=BASE, overrides=["experiment.name=x"])
+    assert len(plan) == 4
+    assert len(plan.axes) == 2
+    assert plan.digest == sweep_definition_digest(BASE, root_type=Root, block=bl)
+
+
+def test_a_plan_refuses_before_expanding_rather_than_expanding_something_wrong():
+    bl = block(
+        axes={"epochs": [10, 20]},
+        covariant_axes={"arch": [{"epochs": 1}, {"epochs": 2}]},
+    )
+    with pytest.raises(RefusalError, match="claimed by two axes"):
+        plan_sweep(bl, root_type=Root, composed=BASE)
+
+
+# --- declaring the block on a root -------------------------------------------
+
+
+def test_a_root_with_no_sweep_field_is_told_the_line_to_add():
+    """Sweeping is not universal, so the block is not requirable. The cost of that
+    is that a project which tries must be told the fix, not the rule it broke."""
+
+    class Bare(StrictModel):
+        experiment: ExperimentConfig
+        output_root: PortablePath = Path("./runs")
+
+    with pytest.raises(RefusalError, match="cannot sweep") as caught:
+        check_root_declares_sweep(Bare)
+    assert "sweep: SweepDeclaration" in str(caught.value)
+
+
+def test_an_unmarked_sweep_field_is_refused_because_it_would_fail_silently():
+    """Everything would work; only the digests would be wrong."""
+
+    class Unmarked(StrictModel):
+        experiment: ExperimentConfig
+        output_root: PortablePath = Path("./runs")
+        sweep: SweepBlock = Field(default_factory=SweepBlock)
+
+    with pytest.raises(RefusalError, match="declared but unmarked") as caught:
+        check_root_declares_sweep(Unmarked)
+    assert "run by hand" in str(caught.value)
+
+
+def test_a_properly_declared_root_passes():
+    check_root_declares_sweep(Root)
+
+
+def test_the_check_fires_only_when_a_sweep_block_is_actually_present():
+    """A project that never sweeps must not be asked to declare anything."""
+
+    class Bare(StrictModel):
+        experiment: ExperimentConfig
+        output_root: PortablePath = Path("./runs")
+
+    assert sweep_block_of({"experiment": {"name": "x"}}, root_type=Bare) is None
+
+
+# --- the block does not reach a digest ---------------------------------------
+
+
+def test_the_sweep_block_is_excluded_from_behavioral_sources():
+    from honbu import excluded_source_paths
+
+    assert ("sweep",) in excluded_source_paths(Root)
+
+
+def test_a_child_digest_equals_the_same_configuration_run_by_hand():
+    """The guarantee the marker exists for.
+
+    Preparation strips the block from each child, so a hand-run configuration
+    carries one where a child does not. If either digest read it the two would
+    differ — and both runs would still succeed, with only the identities
+    disagreeing.
+    """
+    from honbu import FieldHash, HashRegistry
+
+    hashes = HashRegistry(
+        [FieldHash(name="config_hash", include=["experiment", "epochs", "sweep"])]
+    )
+    authored = {**BASE, "sweep": {"gate": "runtime.config_id", "axes": {"epochs": [10, 20]}}}
+    by_hand = Root.model_validate(authored)
+    child = Root.model_validate(without_sweep_block(authored))
+
+    assert (
+        hashes.compute({"config": by_hand}).entries["config_hash"].value
+        == hashes.compute({"config": child}).entries["config_hash"].value
+    )
+
+
+def test_the_exclusion_holds_even_when_a_hash_names_the_block_explicitly():
+    """An include set cannot readmit a marked field. That is the whole point of
+    applying marker exclusions after the include set rather than within it."""
+    from honbu import FieldHash, HashRegistry
+
+    hashes = HashRegistry([FieldHash(name="h", include=["experiment", "sweep"])])
+    empty = Root.model_validate({**BASE, "sweep": {"axes": {}}})
+    swept = Root.model_validate({**BASE, "sweep": {"axes": {"epochs": [1, 2, 3]}}})
+    assert (
+        hashes.compute({"config": empty}).entries["h"].value
+        == hashes.compute({"config": swept}).entries["h"].value
+    )

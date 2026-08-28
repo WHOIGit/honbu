@@ -42,6 +42,30 @@ class DerivedMarker:
     """
 
 
+class DirectiveMarker:
+    """An authored instruction to the framework, not an input to the work.
+
+    The other exclusions are all about *provenance* — a value Honbu generated, a
+    path, a template. This one is about **audience**. The field is authored by hand
+    and stays in the persisted configuration where it is useful provenance; it is
+    simply not something the run reads. A sweep block is the case in point: it
+    describes how a set of runs is generated, and every run it generates would
+    compute exactly the same thing without it.
+
+    Excluding it structurally is what lets a sweep child's digest equal that of the
+    same configuration invoked by hand. Preparation strips the block from each
+    child, so a hand-run configuration carries one where a child does not; if either
+    digest read it the two would differ, and "a child is indistinguishable from a
+    hand-run configuration" would fail silently — both runs succeed, and only the
+    identities disagree.
+
+    Leaving that to hash include sets would make the guarantee a convention. It
+    holds today only because ``include`` is mandatory and no project has yet named
+    the block; the first broad include set would break it with nothing to catch the
+    break.
+    """
+
+
 class ResolvedOnlyMarker:
     """May be absent from authored configuration; the resolver populates it."""
 
@@ -97,6 +121,7 @@ class FromHash:
 
 PORTABLE_PATH = PathMarker()
 DERIVED = DerivedMarker()
+DIRECTIVE = DirectiveMarker()
 RESOLVED_ONLY = ResolvedOnlyMarker()
 TEMPLATED = TemplatedMarker()
 IDENTITY = IdentityMarker()
@@ -114,7 +139,7 @@ WILDCARD = "*"
 
 FieldPath = tuple[str, ...]
 
-_EXCLUDED_FROM_SOURCES = (PathMarker, DerivedMarker, TemplatedMarker)
+_EXCLUDED_FROM_SOURCES = (PathMarker, DerivedMarker, DirectiveMarker, TemplatedMarker)
 
 
 def _unwrap(annotation: Any) -> Any:
@@ -372,6 +397,18 @@ def _marker_of(field: Any, annotation: Any, marker_type: type) -> Any | None:
         else:
             stack.extend(get_args(current))
     return None
+
+
+def field_marker(info: Any, marker_type: type) -> Any | None:
+    """The marker of a given type on one field, or None.
+
+    A field may carry a marker two ways — in the annotation
+    (``Annotated[X, DERIVED]``) or in the field's own metadata — and which one a
+    project used is not something a caller should have to know. Asking about a
+    single declared field, rather than walking a whole model for every field
+    carrying a marker, is what :func:`marked_field_paths` does not do.
+    """
+    return _marker_of(info, info.annotation, marker_type)
 
 
 def _walk_marked(

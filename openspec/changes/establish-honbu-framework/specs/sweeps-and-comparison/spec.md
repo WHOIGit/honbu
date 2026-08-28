@@ -112,6 +112,13 @@ supply values at the group's package path. A group is merged rather than
 substituted, so a base that defines the same location yields the union of both and
 an ablation silently fails to ablate.
 
+This check SHALL be made by composing with the group dropped from the defaults
+list, because after composition the package path holds the merged product and
+carries no record of where each key came from. What remains at the package path
+with the group dropped is exactly what the base supplies. Comparing the composed
+options against one another would not do: a key every option happens to set
+identically is indistinguishable from one the base set.
+
 #### Scenario: Group axis selects whole files
 - **WHEN** an axis's values name options of a configuration group
 - **THEN** each child composes with that option selected
@@ -199,6 +206,12 @@ the caller to express it as an axis. Such an override is otherwise a no-op — t
 axis assigns that path per child regardless — so accepting it would silently
 discard what the caller asked for.
 
+An override addressing a path *below* a swept one SHALL be refused on the same
+grounds. For a group axis this is the substantive case rather than an edge one:
+because a group is merged rather than substituted, such an override survives every
+selection and reaches all children, which is the command-line form of the shadowed
+group above.
+
 An override addressing any other path SHALL compose normally and join the base
 configuration for every child, which is how a sweep is re-run against a different
 input or output location.
@@ -208,6 +221,10 @@ Overrides addressing the sweep block itself SHALL redefine the sweep.
 #### Scenario: Override contests an axis
 - **WHEN** an override assigns a path that the sweep block declares as an axis
 - **THEN** it is refused, naming the path and the axis form to use instead
+
+#### Scenario: Override below a swept group
+- **WHEN** an override assigns a path below one a group axis sweeps
+- **THEN** it is refused, because merging would carry it into every child
 
 #### Scenario: Override outside the swept set
 - **WHEN** an override assigns a path no axis claims
@@ -253,9 +270,21 @@ is freshly generated per invocation can never collide and so gates nothing, whil
 appearing to pass. Verification SHALL be by resolving one configuration under two
 invocation contexts and requiring the value to be stable.
 
-The declared value SHALL appear in the child output template. This makes distinct
-identifiers imply distinct output directories, so the semantic check and the
-protection against children overwriting one another cannot disagree.
+The declared value SHALL appear in the child output template, and a swept command
+SHALL name its children by template rather than by a literal directory, which would
+put every child in one place.
+
+The template rule is not sufficient on its own, and the resolved child output
+directories SHALL therefore also be required distinct. The rule can ask whether the
+gate's *path* is read; it cannot ask what the reading renders to, and a template
+function may be lossy — a slug maps `reef v3` and `reef-v3` to one segment, so two
+children hold distinct gate values, satisfy the rule, and still land in one
+directory.
+
+The two checks SHALL therefore be separate and both made: distinct gate values are
+the claim that these are different experiments, distinct directories the guarantee
+that neither will overwrite the other. The template rule is what usually makes the
+second follow from the first; the directory check is what happens when it does not.
 
 A refusal SHALL name the colliding children and the axes that failed to
 distinguish them, and SHALL suggest adding the child index or a realized axis
@@ -273,9 +302,58 @@ value to the template.
 - **WHEN** the declared identifier does not appear in the child output template
 - **THEN** preparation refuses, because distinct children could share a directory
 
+#### Scenario: Swept command naming a literal directory
+- **WHEN** a swept command's output block pins a directory instead of a template
+- **THEN** preparation refuses, because every child would resolve to one place
+
+#### Scenario: A lossy template function collapses distinct children
+- **WHEN** two children hold distinct gate values that the output template renders
+  to one directory
+- **THEN** preparation refuses, naming the directory and the children claiming it,
+  even though the gate itself passed every check
+
 #### Scenario: Identifier reached through a template
 - **WHEN** the declared identifier is a template-valued field
 - **THEN** it is checked after rendering, against the value that will be used
+
+### Requirement: The sweep block is declared by projects that sweep, and marked
+The sweep block SHALL NOT be a requirable block. Sweeping is not universal, and
+requiring the field would tax every project that never sweeps with a field it never
+uses.
+
+A project that declares no such field and is nevertheless given a sweep block SHALL
+be refused with the declaration it is missing, rather than with the strict
+schema's own message about extra inputs — which names the rule that was broken
+instead of the fix.
+
+The field SHALL carry the directive marker, and the framework SHALL verify this
+rather than trust it, because omitting it fails silently: every run succeeds and
+only the digests are wrong.
+
+#### Scenario: Project without the block
+- **WHEN** a sweep block reaches a root that declares no sweep field
+- **THEN** it is refused, naming the declaration to add
+
+#### Scenario: Block declared but unmarked
+- **WHEN** the sweep field is declared without the directive marker
+- **THEN** it is refused, because the definition would enter the project's digests
+
+#### Scenario: Project that never sweeps
+- **WHEN** a project declares no sweep field and is given no sweep block
+- **THEN** nothing is required of it
+
+### Requirement: A gate alone declares no sweep
+A sweep SHALL be recognized by its axes, not by the presence of the block. A block
+carrying a gate and no axes SHALL be inert, and an ordinary command SHALL run
+normally in its presence.
+
+Projects set a default gate in the base configuration so that a sweep declared
+entirely in overrides inherits one; if a gate alone counted as a sweep, that
+default would refuse every ordinary run.
+
+#### Scenario: Gate without axes
+- **WHEN** a configuration carries a sweep block whose axes are empty
+- **THEN** an ordinary command runs normally and the block is ignored
 
 ### Requirement: A prepared child is indistinguishable from a hand-run configuration
 The sweep block SHALL be consumed by preparation and removed from each child's
@@ -286,6 +364,12 @@ configuration.
 
 Otherwise every child's configuration identity would incorporate the whole sweep
 definition, and a child could not be compared against a baseline produced by hand.
+
+Stripping the block SHALL NOT be what carries this property. Because the block may
+legitimately sit in a base configuration during an ordinary run, a hand-run
+configuration carries one where a child does not, so the guarantee depends on the
+block being excluded from every digest by its marker. Leaving that to hash include
+sets would make it a convention that the first broad include set silently breaks.
 
 #### Scenario: Child digest matches a direct invocation
 - **WHEN** a child's configuration is also invoked directly with the same values
@@ -310,9 +394,40 @@ preparation, so that one command has one target.
 - **THEN** every child holds its composed configuration, resolved configuration and
   resolved hashes, and every child's state is initialized
 
+A sweep SHALL be extensible in place. Re-preparing a sweep whose definition has
+grown SHALL add the children it gained and change nothing else — the same
+relationship an augmenting command has to a run, where adding an evaluation extends
+the run rather than forking it.
+
+This requires the sweep's identity to come from its **directory** rather than its
+definition. A definition-derived identity would make "the definition changed" and
+"this is a different sweep" one statement, so adding one axis value would rename
+the sweep and, under a child template naming it, relocate every child and orphan
+whatever had already run — which is precisely the case re-preparation exists for.
+
+Removing an axis value SHALL NOT delete anything. The child's index entry SHALL be
+kept and marked as outside the current definition, because a completed child holds
+results, and an index that stopped mentioning it would leave the directory on disk
+and unreferenced — the silent omission the index exists to prevent. Restoring the
+value SHALL restore the entry rather than prepare a second child.
+
 #### Scenario: Re-preparing an existing sweep
 - **WHEN** preparation runs again over a sweep whose children exist
 - **THEN** existing children are left as they are, including completed ones
+
+#### Scenario: Growing a sweep
+- **WHEN** an axis gains a value and the sweep is prepared again
+- **THEN** only the child that was gained is prepared, every existing child stays
+  where it is, and the sweep keeps its identity
+
+#### Scenario: Shrinking a sweep
+- **WHEN** an axis loses a value
+- **THEN** its child is retained in the index, marked outside the current
+  definition, and its run directory is left untouched
+
+#### Scenario: Restoring a removed value
+- **WHEN** a removed axis value is added back
+- **THEN** its existing child is adopted rather than a second one prepared
 
 #### Scenario: Training command given a sweep
 - **WHEN** a producing command is invoked with an active sweep block
@@ -325,9 +440,11 @@ so the two can never disagree.
 
 The sweep manifest SHALL hold two zones with different rules. The **index** —
 children, coordinates, gate values, realized axis values, run directories — SHALL
-be immutable after preparation. The **progress** zone SHALL be a cache: every value
-in it SHALL be derivable by rescanning the children, and it SHALL carry the time it
-was last refreshed.
+hold entries that are immutable once written, and SHALL accumulate: preparing a
+grown definition adds entries and rewrites none, the way a run's manifest
+accumulates invocations. No child's state SHALL be stored there. The **progress**
+zone SHALL be a cache: every value in it SHALL be derivable by rescanning the
+children, and it SHALL carry the time it was last refreshed.
 
 The progress zone SHALL never be authoritative. It exists so a human can read a
 sweep's state at a glance without invoking a tool, which is worth having; but a
@@ -411,10 +528,18 @@ preparation or execution.
 - **THEN** preparation and execution proceed and only collection is skipped
 
 ### Requirement: Sweep identity
-A sweep SHALL have an identity, and a digest over its definition — the base
+A sweep SHALL carry two distinct values, and they SHALL NOT be collapsed into one.
+
+The **identity** says which sweep this is. It SHALL come from the sweep's
+directory, SHALL be assigned rather than authored, and SHALL be persisted so that
+moving the directory does not rename the sweep. It SHALL NOT derive from the
+definition, because then it could not survive the definition growing.
+
+The **definition digest** says what the sweep currently describes — the base
 configuration and the axes — computed under the same exclusions as any other
 digest, so that generated identities and output locations do not enter it. Two
-sweeps differing only in output location SHALL share a definition digest.
+sweeps differing only in output location SHALL share one. It SHALL change when the
+definition changes; that is its job.
 
 Children SHALL carry the sweep identity as provenance, so results produced within
 a sweep are attributable to it.
@@ -422,6 +547,14 @@ a sweep are attributable to it.
 #### Scenario: Output location excluded
 - **WHEN** two sweeps differ only in where they write
 - **THEN** their definition digests are equal
+
+#### Scenario: One definition in two directories
+- **WHEN** one definition is prepared in two directories
+- **THEN** they are two sweeps with one definition digest
+
+#### Scenario: A sweep directory is moved
+- **WHEN** a prepared sweep's directory is moved and prepared again
+- **THEN** it keeps the identity it was given
 
 #### Scenario: Axis change alters the digest
 - **WHEN** an axis gains a value

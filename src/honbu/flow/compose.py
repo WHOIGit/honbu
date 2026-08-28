@@ -391,6 +391,46 @@ def check_overrides(overrides: Sequence[str]) -> None:
         )
 
 
+#: The two open containers whose non-emptiness makes a sweep block *active*. A
+#: block carrying only a gate is inert: projects set a default gate in the base
+#: configuration so a sweep declared entirely in overrides inherits one, and if a
+#: gate alone counted as a sweep that default would refuse every ordinary run.
+SWEEP_AXIS_CONTAINERS = ("axes", "covariant_axes")
+
+
+def sweep_is_active(composed: Mapping[str, Any]) -> bool:
+    """Whether a composed configuration asks for a sweep.
+
+    Deliberately structural rather than typed. The sweep capability owns the block's
+    schema and lives a layer above this one, so asking the question properly here
+    would invert the dependency for a dict lookup. What flow needs to know is only
+    whether to hand off, and that is visible without the schema.
+    """
+    block = composed.get(SWEEP_BLOCK)
+    if not isinstance(block, Mapping):
+        return False
+    return any(bool(block.get(name)) for name in SWEEP_AXIS_CONTAINERS)
+
+
+def refuse_active_sweep_block(composed: Mapping[str, Any], *, invocation: str) -> None:
+    """Refuse to run a single command against a configuration describing many.
+
+    One command, one target. A configuration with two axes describes twelve runs;
+    running it would produce exactly one, from the base values — an arbitrary point
+    of the matrix, with a run directory, a manifest and metrics all looking like a
+    sweep that never happened. Erroring costs one command, ignoring costs the
+    experiment and says nothing.
+    """
+    if not sweep_is_active(composed):
+        return
+    raise RefusalError(
+        f"{invocation} was given an active {SWEEP_BLOCK!r} block, which describes "
+        f"more than one run. A command has one target, so this would silently "
+        f"produce a single child from the base values. Prepare the sweep instead, "
+        f"then run its children."
+    )
+
+
 def force_add_sweep_overrides(overrides: Sequence[str]) -> list[str]:
     """Rewrite a bare ``sweep.*`` override to the compositor's force-add form.
 

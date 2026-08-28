@@ -83,26 +83,54 @@
   the compositor composes in struct mode, so a bare `sweep.axes.<path>=` is rewritten
   to its force-add form, since every key under the block is open by construction and
   the prefix would otherwise depend on whether a previous sweep used that key.
-- [ ] 4.1a The child-distinguishing gate: declared identifier, stability
-  verification by resolving under two invocation contexts, the
-  must-appear-in-the-output-template rule, and a refusal naming colliding children
-  and the axes that failed to separate them.
-- [ ] 4.1b Preparation and the sweep directory: materialize every child in the
+- [x] 4.1a The child-distinguishing gate: declared identifier, stability
+  verification by resolving under two invocation contexts differing in both clock
+  and entropy, the must-appear-in-the-output-template rule, and a refusal naming
+  colliding children and the axes that failed to separate them — which are exactly
+  the axes whose realized values differ across the collision. Plus a check the spec
+  had folded into the template rule and which does not follow from it: the resolved
+  child directories must themselves be distinct, since a lossy template function can
+  collapse two sound gate values into one directory.
+- [x] 4.1b Preparation and the sweep directory: materialize every child in the
   initialized state running nothing, strip the sweep block from each child so its
   digests match a hand-run configuration, idempotent re-preparation, the sweep
-  output block with its `config/` holding the immutable index, and a producing
-  command's refusal of an active sweep block.
+  `config/` holding the immutable index, and a producing command's refusal of an
+  active sweep block — which lives in flow rather than here, as a structural dict
+  check, so the layer that needs to hand off does not import the layer it hands off
+  to. Every child is resolved and every gate check passes before anything is
+  written. `runtime.sweep_id` is supplied to the resolver so a child template can
+  name its sweep.
+- [x] 4.1h A sweep is extensible in place (D29): its identity comes from its
+  directory rather than its definition, so growing an axis adds the children it
+  gained and moves nothing — the relationship an augmenting command has to a run.
+  `sweep_id` and `sweep_hash` separated as the glossary always had them; the index
+  accumulates rather than being rewritten; a removed axis value retires its child
+  instead of dropping it, and restoring the value adopts it back.
+  - Deferred: the sweep resolving its own output block, peer to a run's. Preparation
+    takes a sweep directory rather than deriving one, since a sweep-level output
+    block needs a root schema of its own and that belongs with sweep-level reporting
+    (4.1f), not with writing children.
 - [ ] 4.1c Execution and status derived from the children's manifests: skip
   completed, resume every resumable state, uniform `--resolved <child> --resume`
   invocation, and stop/resume verified by test.
 - [ ] 4.1d Optional execution adapters: local sequential needing no extra, a job
   submitter, and a search-driven sweeper reading its objective from a child's
   recorded best metrics rather than a work-function return value.
-- [ ] 4.1e Axis well-formedness (D24): the same-paths-per-option,
+- [x] 4.1e Axis well-formedness (D24): the same-paths-per-option,
   no-path-claimed-twice and at-least-two-options rules; refusal rather than a
   skipped combination for a bad path; the refusal of an override contesting a swept
-  path; the axis-wins warning emitted once per axis; and the refusal of a group axis
-  whose package path the base configuration also sets.
+  path or one below it; the axis-wins warning emitted once per axis, returned as a
+  string like every other Honbu warning rather than emitted; and the refusal of a
+  group axis whose package path the base configuration also sets, detected by
+  composing with the group dropped from the defaults list, which is the only form of
+  the check that can tell a base-supplied key from one every option sets alike.
+  `plan_sweep` runs the checks in fix-cost order and either refuses or returns a
+  fully expanded plan.
+- [x] 4.1g The directive marker (D28): a fourth exclusion from behavioral sources,
+  claiming audience rather than provenance; `SweepDeclaration` as the one line a
+  project adds; the block left optional rather than requirable; and verification at
+  the point a sweep is asked for that the field is both declared and marked, since
+  omitting the marker fails silently.
 - [ ] 4.1f Sweep manifest (D23): the immutable index zone, the rebuildable progress
   cache with its refresh time, refresh-before-report, and a test that deleting the
   cache changes no behavior.

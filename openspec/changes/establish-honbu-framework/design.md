@@ -935,6 +935,80 @@ moved is otherwise picked up silently.
 No command name is reserved, for the same reason no option governing how much work
 runs is reserved (D25): reserving a name is the same imposition by another route.
 
+### D28 — A directive is authored and excluded; the sweep block is the first one
+
+The three existing exclusions from behavioral sources are all claims about
+*provenance*: a value Honbu generated, a filesystem path, a template rendered in
+place. The sweep block fits none of them. It is authored by hand, it is not a path,
+and it is not a template. But it is emphatically not an input to the work: it
+describes how a *set* of runs is generated, and every run it generates computes the
+same thing whether or not it is there.
+
+So the fourth marker is a claim about **audience** rather than origin — an authored
+instruction to the framework that the work does not read. Stretching the derived
+marker to cover it would have been cheaper and would have asserted something false,
+which the walkers would then propagate everywhere.
+
+This is not tidiness. The spec promises that a prepared child's digest equals that
+of the same configuration invoked by hand, and the obvious mechanism — preparation
+strips the block from each child — does not deliver it. A base configuration may
+legitimately carry a block during an ordinary run, most naturally a default `gate`
+so that a sweep declared entirely in overrides inherits one. Run that configuration
+by hand and it has a `sweep` key; run it as a child and it does not. If any digest
+reads the block the two disagree, and nothing announces it: both runs succeed, and
+only the identities are wrong.
+
+That it does not bite today is an accident of taste. `FieldHash.include` is
+mandatory, so a project names blocks explicitly and no project has yet named this
+one. The first broad include set breaks the guarantee silently — precisely the
+failure the marker system exists to make impossible, and precisely what the hashing
+module already says of itself: marker exclusions are applied after the include set
+so that a newly marked field cannot be readmitted by an include set nobody
+revisited.
+
+Two consequences follow. The block is **not** a requirable block, because sweeping
+is not universal and the four requirable ones are the only structures both sibling
+projects genuinely share; a project that never sweeps declares nothing. And because
+it is optional, the framework verifies the declaration at the moment a sweep is
+actually asked for — both that the field exists and that it is marked. The marker
+is checked rather than trusted for the reason above: forgetting it is invisible.
+
+### D29 — A sweep is a directory you add to, not a definition you re-declare
+
+A sweep's identity comes from its **directory**. The definition digest is a
+separate value that changes freely.
+
+The first implementation collapsed them — the sweep identity was a slug of the
+definition digest — and the consequence only showed up in a test: adding one value
+to an axis renamed the sweep, so under a child template naming it, every child
+resolved somewhere new and the eleven that had already run were orphaned. That is
+exactly the situation re-preparation exists to handle, and it was the one situation
+it could not.
+
+The glossary had already drawn the distinction and the implementation ignored it:
+`sweep_id` is "an identity for one sweep, assigned, never authored"; `sweep_hash`
+is "a digest over the sweep's definition". Two values, two questions — *which sweep
+is this* and *what does it currently describe*. Only the second is allowed to move.
+
+The right anchor is the one runs already use. A run is its directory; an augmenting
+command adds an evaluation to it without forking it. A sweep is its directory; a
+grown definition adds children to it without renaming it. The index accumulates the
+way a manifest accumulates invocations, and each entry stays immutable once
+written.
+
+That leaves shrinking, which is not symmetric with growing. A removed axis value
+does not remove a child, because a child that ran holds results and its directory
+does not vanish when the definition stops mentioning it. Dropping the entry would
+leave that directory on disk and unreferenced — the silent omission the index
+exists to prevent, arrived at from the other direction. So the entry is retained
+and marked as outside the current definition, and restoring the value adopts the
+child back rather than preparing a second one.
+
+The identity is derived from the path on first write and then persisted, which
+costs nothing and buys two things: a first preparation is reproducible without
+consulting any state, and a directory that is later moved keeps its identity rather
+than quietly becoming a different sweep.
+
 ## Risks / Trade-offs
 
 - [Adoption is a real refactor for two working codebases] → Accepted; a big-bang

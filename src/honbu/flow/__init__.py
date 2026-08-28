@@ -42,9 +42,11 @@ from honbu.flow.compose import (
     composed_config_path,
     force_add_sweep_overrides,
     prior_config_path,
+    refuse_active_sweep_block,
     resolved_config_path,
     selected_source,
     split_argv,
+    sweep_is_active,
 )
 from honbu.flow.harness import (
     Application,
@@ -113,10 +115,12 @@ __all__ = [
     "open_run",
     "parse_invocation",
     "prior_config_path",
+    "refuse_active_sweep_block",
     "resolve",
     "resolved_config_path",
     "resolved_digest",
     "selected_source",
     "split_argv",
+    "sweep_is_active",
     "write_bundle",
 ]

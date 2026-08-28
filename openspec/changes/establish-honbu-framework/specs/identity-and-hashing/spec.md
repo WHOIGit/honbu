@@ -63,11 +63,21 @@ source SHALL carry no version token.
 - **THEN** its top-level keys are configuration field names
 
 ### Requirement: Type-driven field exclusion
-Portable-path fields and generated/derived-identity fields SHALL be excluded from
-behavioral sources by walking their type markers — including through mapping
-values and sequence elements — never a hand-maintained list. Marker exclusion
-SHALL be applied after any declared selection and SHALL NOT be overridable by a
-declaration.
+Marked fields SHALL be excluded from behavioral sources by walking their type
+markers — including through mapping values and sequence elements — never a
+hand-maintained list. The marked set is portable paths, generated/derived
+identities, templates, and directives. Marker exclusion SHALL be applied after any
+declared selection and SHALL NOT be overridable by a declaration.
+
+A **directive** is a field authored by hand that the work does not read: an
+instruction to the framework about how runs are generated rather than an input to
+what a run computes. It is a distinct marker from the derived one, which asserts
+that the framework *generated* the value — a claim that would be false here, and
+the field does stay in the persisted configuration where it is useful provenance.
+
+#### Scenario: Directive field
+- **WHEN** two configurations differ only in a directive-marked field
+- **THEN** their behavioral digests are equal
 
 #### Scenario: Portable path only
 - **WHEN** two configurations differ only in path-marked fields

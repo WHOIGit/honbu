@@ -28,13 +28,17 @@ from __future__ import annotations
 import itertools
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from honbu.errors import RefusalError
 from honbu.mechanics.canonical import hash_source
 from honbu.mechanics.markers import (
+    DIRECTIVE,
+    DirectiveMarker,
+    check_field_path,
+    field_marker,
     excluded_source_paths,
     prune_path,
     traversable_submodel,
@@ -133,16 +137,64 @@ class Coordinate:
     selections: Mapping[str, str]
 
 
-def sweep_block_of(composed: Mapping[str, Any]) -> SweepBlock | None:
+#: How a project declares the block on its root. The marker is not optional: it is
+#: what keeps the block out of every digest, and so what makes a prepared child's
+#: identity equal to that of the same configuration invoked by hand.
+SweepDeclaration = Annotated[SweepBlock, DIRECTIVE]
+
+#: The line a project adds to its root to gain sweeps. Quoted in refusals rather
+#: than paraphrased, so what is reported is what compiles.
+DECLARATION_LINE = f"{SWEEP_BLOCK}: SweepDeclaration = Field(default_factory=SweepBlock)"
+
+
+def check_root_declares_sweep(root_type: type[BaseModel]) -> None:
+    """Confirm the root carries a sweep field, and that it is marked.
+
+    Sweeping is not universal, so the block is not a requirable one — a project that
+    never sweeps declares nothing and pays nothing. The cost of that choice is that
+    a project which *tries* to sweep without declaring it would otherwise be told
+    only that extra inputs are not permitted, which names the rule rather than the
+    fix. This says the fix.
+
+    The marker is checked as well as the field, because forgetting it fails
+    silently: everything works, and only the digests are wrong.
+    """
+    info = root_type.model_fields.get(SWEEP_BLOCK)
+    if info is None:
+        raise RefusalError(
+            f"{root_type.__name__} declares no {SWEEP_BLOCK!r} block, so this project "
+            f"cannot sweep. Add one line to the root:\n  {DECLARATION_LINE}"
+        )
+    if field_marker(info, DirectiveMarker) is None:
+        raise RefusalError(
+            f"{root_type.__name__}.{SWEEP_BLOCK} is declared but unmarked, so the "
+            f"sweep definition would enter this project's digests and a prepared "
+            f"child's identity would differ from the same configuration run by hand. "
+            f"Declare it as:\n  {DECLARATION_LINE}"
+        )
+
+
+def sweep_block_of(
+    composed: Mapping[str, Any], *, root_type: type[BaseModel] | None = None
+) -> SweepBlock | None:
     """Read the sweep block out of a composed configuration, if it carries one.
 
     Returns None when the block is absent *or* present and empty, since both mean
-    "this is not a sweep". A malformed block is a refusal rather than None: someone
-    who wrote a ``sweep:`` key meant something by it.
+    "this is not a sweep". A gate on its own is inert by that rule, deliberately: a
+    project sets a default gate in its base configuration so that a sweep declared
+    entirely on the command line inherits one, and if a gate alone counted as a
+    sweep that default would break every ordinary run.
+
+    A malformed block is a refusal rather than None: someone who wrote a ``sweep:``
+    key meant something by it. Passing ``root_type`` additionally checks that the
+    project declared the block properly, which is worth doing exactly here — at the
+    first point a sweep is actually being asked for.
     """
     raw = composed.get(SWEEP_BLOCK)
     if raw is None:
         return None
+    if root_type is not None:
+        check_root_declares_sweep(root_type)
     if not isinstance(raw, Mapping):
         raise RefusalError(
             f"the {SWEEP_BLOCK!r} block must be a mapping, not {type(raw).__name__}"
@@ -212,6 +264,44 @@ def normalize_axes(axes: Mapping[str, Any]) -> dict[str, list[Any]]:
     return flat
 
 
+def _check_covariant_shape(label: str, options: Sequence[Mapping[str, Any]]) -> None:
+    """Two of the three well-formedness rules, both about one covariant axis.
+
+    A single option is a constant wearing the shape of an axis: it varies nothing,
+    and the value it pins is invisible where anyone would look for it — so it
+    belongs in the base configuration.
+
+    Ragged options are worse, because they look right. An option omitting a path its
+    siblings assign does not fail; it silently inherits the base configuration's
+    value for that path, so one point of the diagonal is quietly not on it. Nothing
+    downstream can recover the intent, since "inherit the base here" and "I forgot
+    this one" are the same document.
+    """
+    if len(options) < 2:
+        raise RefusalError(
+            f"covariant axis {label!r} declares {len(options)} option(s); an axis "
+            f"needs at least two. A single option is a constant — put it in the base "
+            f"configuration, where it is visible."
+        )
+    expected = set(options[0])
+    for position, option in enumerate(options[1:], start=1):
+        missing = expected - set(option)
+        extra = set(option) - expected
+        if not missing and not extra:
+            continue
+        detail = []
+        if missing:
+            detail.append(f"omits {sorted(missing)}")
+        if extra:
+            detail.append(f"adds {sorted(extra)}")
+        raise RefusalError(
+            f"option {position} of covariant axis {label!r} {' and '.join(detail)} "
+            f"relative to option 0. Every option must assign the same set of paths: "
+            f"an omitted path silently inherits the base configuration instead of "
+            f"varying, which is a hole wearing the shape of an axis."
+        )
+
+
 def normalize_covariant_axes(
     covariant_axes: Mapping[str, Any],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -240,6 +330,7 @@ def normalize_covariant_axes(
                     f"of configuration path to value; got {type(option).__name__}"
                 )
             flattened.append(_flatten_option(option, label, position))
+        _check_covariant_shape(str(label), flattened)
         out[str(label)] = flattened
     return out
 
@@ -373,6 +464,236 @@ def expand(axes: Sequence[Axis]) -> tuple[Coordinate, ...]:
             )
         )
     return tuple(coordinates)
+
+
+def check_no_path_claimed_twice(axes: Sequence[Axis]) -> None:
+    """The third well-formedness rule, and the only one that spans the block.
+
+    Two claims on one path mean one silently wins per child, and which one is an
+    artifact of application order rather than anything the author wrote. The rule
+    holds across kinds, not just within them: an ordinary axis and a covariant axis
+    claiming the same path is the same defect as two ordinary axes doing so, and is
+    the easier one to write by accident.
+    """
+    claimant: dict[str, Axis] = {}
+    for axis in axes:
+        for path in axis.paths:
+            prior = claimant.get(path)
+            if prior is not None:
+                raise RefusalError(
+                    f"{path!r} is claimed by two axes: {prior.label!r} "
+                    f"({prior.kind}) and {axis.label!r} ({axis.kind}). One would "
+                    f"silently win per child; declare the path once."
+                )
+            claimant[path] = axis
+
+
+def check_axis_paths(
+    axes: Sequence[Axis],
+    *,
+    root_type: type[BaseModel],
+    composed: Mapping[str, Any],
+) -> None:
+    """Both path checks, over every path every axis claims.
+
+    A bad path is a refusal, never a skipped combination. Skipping is for a
+    combination a project's own validator rejects — a real point of the matrix that
+    turned out not to be valid. A bad path is not one bad point: it spoils every
+    child, and recording that as skipping would report a sweep that merely found
+    nothing, which is the wrong story about the wrong thing.
+    """
+    for axis in axes:
+        for path in axis.paths:
+            problem = check_field_path(
+                root_type, path, data=composed, traverse_containers=True
+            )
+            if problem is None:
+                continue
+            check = "schema" if problem.kind == "unknown_field" else "configuration"
+            raise RefusalError(
+                f"axis {axis.label!r} targets {path!r}, which fails the {check} "
+                f"check: {problem.message}"
+            )
+
+
+def override_key(token: str) -> str | None:
+    """The configuration path an override token addresses, prefixes stripped.
+
+    Returns None for a token that addresses nothing assignable.
+    """
+    body = token.lstrip("+~")
+    if not body:
+        return None
+    key = body.split("=", 1)[0].strip()
+    return key or None
+
+
+def check_no_override_contests_an_axis(
+    axes: Sequence[Axis], overrides: Sequence[str]
+) -> None:
+    """Refuse an override that assigns a path the sweep already sweeps.
+
+    Such an override is a no-op — the axis assigns that path per child regardless,
+    so whatever the caller typed is discarded — and a no-op shaped like an
+    instruction is worse than an error, because it is indistinguishable from having
+    worked.
+
+    A *descendant* of a swept path is refused too, and for a group axis that is the
+    substantive case: a group is merged rather than substituted, so
+    ``data.split=val`` survives every selection and leaks into all children instead
+    of being replaced by the chosen file.
+
+    Overrides addressing the block itself redefine the sweep and are left alone.
+    """
+    claimed = {path: axis for axis in axes for path in axis.paths}
+    for token in overrides:
+        key = override_key(token)
+        if key is None or key == SWEEP_BLOCK or key.startswith(f"{SWEEP_BLOCK}."):
+            continue
+        for path, axis in claimed.items():
+            if key != path and not key.startswith(f"{path}."):
+                continue
+            form = (
+                f"{SWEEP_BLOCK}.covariant_axes.{axis.label}=[...]"
+                if axis.kind == "covariant"
+                else f"{SWEEP_BLOCK}.axes.{path}=[...]"
+            )
+            raise RefusalError(
+                f"override {token!r} assigns {key!r}, which axis {axis.label!r} "
+                f"already sweeps. It would be discarded rather than applied. "
+                f"Express it as an axis instead:\n  {form}"
+            )
+
+
+def axis_displacement_warnings(
+    axes: Sequence[Axis], composed: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """One warning per axis that displaces a value the base configuration sets.
+
+    The axis wins; this says so. There is deliberately no policy and no flag. A
+    stricter rule — refuse until the base stops setting the path — fails three ways:
+    it is incompatible with group axes, whose package path the defaults list
+    *always* sets; the misspelling it chiefly guarded against is caught precisely by
+    axis-path validation; and its remedy pressures an author to delete a default
+    that is meaningful when the configuration runs alone.
+
+    Once per axis rather than once per child, so a sweep of two hundred children
+    does not bury it under two hundred copies.
+    """
+    warnings: list[str] = []
+    for axis in axes:
+        displaced = {}
+        for path in axis.paths:
+            present, value = _lookup(composed, path)
+            if present:
+                displaced[path] = value
+        if not displaced:
+            continue
+        shown = ", ".join(f"{path}={value!r}" for path, value in displaced.items())
+        warnings.append(
+            f"axis {axis.label!r} overrides the composed configuration for every "
+            f"child, displacing {shown}"
+        )
+    return tuple(warnings)
+
+
+def _lookup(node: Mapping[str, Any], path: str) -> tuple[bool, Any]:
+    """Whether a dotted path is present in a composed tree, and its value."""
+    current: Any = node
+    for segment in path.split("."):
+        if not isinstance(current, Mapping) or segment not in current:
+            return False, None
+        current = current[segment]
+    return True, current
+
+
+def check_no_group_is_shadowed(
+    axes: Sequence[Axis],
+    *,
+    compose_without: Any,
+) -> None:
+    """Refuse a group axis whose package path the base configuration also supplies.
+
+    A configuration group is *merged*, not substituted. If the base sets
+    ``data.split`` directly and the sweep selects between ``data`` options, every
+    child gets the union — the selected file plus the base's leftovers — so an
+    ablation meant to swap the block wholesale silently fails to swap part of it.
+    The failure is invisible in the result: every child looks like it composed.
+
+    Detection needs composition rather than the block alone, because after
+    composition the package path holds the merged product and carries no record of
+    where each key came from. ``compose_without`` is called with a group name and
+    must return the configuration composed with that group dropped from the defaults
+    list; whatever remains at the package path is, exactly, what the base supplies.
+    """
+    for axis in axes:
+        if axis.kind != "group":
+            continue
+        group = axis.paths[0]
+        present, remainder = _lookup(compose_without(group), group)
+        if not present or not remainder:
+            continue
+        keys = sorted(remainder) if isinstance(remainder, Mapping) else [group]
+        raise RefusalError(
+            f"the base configuration supplies {group!r} directly ({', '.join(keys)}) "
+            f"as well as selecting it as a group, and axis {axis.label!r} sweeps it. "
+            f"A group is merged rather than substituted, so every child would get the "
+            f"union of the base and the selected option rather than the option. Move "
+            f"those keys into the group's option files."
+        )
+
+
+@dataclass(frozen=True)
+class SweepPlan:
+    """A validated sweep, expanded but not yet resolved or written.
+
+    Everything that can be checked without composing a child has been. What remains
+    for preparation is per-child work: resolving each combination, checking the gate
+    across them, and writing the directories.
+    """
+
+    axes: tuple[Axis, ...]
+    coordinates: tuple[Coordinate, ...]
+    warnings: tuple[str, ...]
+    digest: str
+
+    def __len__(self) -> int:
+        return len(self.coordinates)
+
+
+def plan_sweep(
+    block: SweepBlock,
+    *,
+    root_type: type[BaseModel],
+    composed: Mapping[str, Any],
+    overrides: Sequence[str] = (),
+    compose_without: Any = None,
+) -> SweepPlan:
+    """Validate a sweep block and expand it. Refuses; never partially succeeds.
+
+    The order is chosen so the first thing reported is the thing most likely to be
+    wrong and cheapest to fix. Shape before paths, because a ragged covariant axis
+    makes every subsequent message about a path that was never coherently claimed.
+    Paths before expansion, because a bad path spoils every child and there is no
+    point building a matrix out of it.
+
+    ``compose_without`` is optional so a sweep can be planned against a
+    configuration dict alone. Without it the group-shadow check cannot run, since it
+    is the only check that needs composition; a caller that has a compositor should
+    pass one.
+    """
+    axes = sweep_axes(block, root_type=root_type)
+    check_no_path_claimed_twice(axes)
+    check_axis_paths(axes, root_type=root_type, composed=composed)
+    check_no_override_contests_an_axis(axes, overrides)
+    if compose_without is not None:
+        check_no_group_is_shadowed(axes, compose_without=compose_without)
+    return SweepPlan(
+        axes=axes,
+        coordinates=expand(axes),
+        warnings=axis_displacement_warnings(axes, composed),
+        digest=sweep_definition_digest(composed, root_type=root_type, block=block),
+    )
 
 
 def sweep_definition_digest(
