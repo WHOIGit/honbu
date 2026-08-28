@@ -10,20 +10,21 @@ not importing it (D20). The numbering is a dependency ordering, not a stack of
 altitudes — composition and identity in particular are siblings, neither importing
 the other, and resolution is the first thing that needs both.
 
-* **L1 mechanics** — the canonical encoder, hash declarations and
+* **Core** — the canonical encoder, hash declarations and
   artifacts, the strict model base, field markers and walkers, atomic writes,
   path portability, template rendering, collision-safe targets.
 * **L2 flow** — declared commands and their write scopes, the fixed
   resolution phase order, collision safety and resume, the provenance bundle, the
   live run manifest, and the CLI grammar.
-* **L3 capabilities** — sweeps, run comparison, ensemble assessment.
+* **Operations** — sweeps, run comparison, ensemble assessment, and
+  configuration materialization.
 
 L1 and L2 are complete. L3 is under construction: sweep definition,
 preparation, and local resumable execution exist; comparison and the remaining
 cross-run capabilities do not yet.
 
-The mechanics are re-exported here for convenience. ``honbu.flow`` and
-``honbu.capabilities`` are not, so importing Honbu never pulls a layer a project
+The core is re-exported here for convenience. ``honbu.flow``, ``honbu.sweeps``,
+``honbu.compare``, and ``honbu.materialize`` are not, so importing Honbu never pulls a layer a project
 did not ask for.
 """
 
@@ -34,8 +35,8 @@ from honbu.errors import (
     RefusalError,
     TemplateError,
 )
-from honbu.mechanics import *  # noqa: F403
-from honbu.mechanics import __all__ as _mechanics_all
+from honbu.core import *  # noqa: F403
+from honbu.core import __all__ as _core_all
 
 __version__ = "0.1.0.dev0"
 
@@ -46,5 +47,5 @@ __all__ = [
     "RefusalError",
     "TemplateError",
     "__version__",
-    *_mechanics_all,
+    *_core_all,
 ]

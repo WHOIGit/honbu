@@ -35,13 +35,13 @@ from typing import Any
 from pydantic import BaseModel
 
 from honbu.errors import DeclarationError, RefusalError
-from honbu.mechanics.canonical import (
+from honbu.core.canonical import (
     CANONICAL_ENCODER_VERSION,
     file_digest,
     hash_source,
 )
-from honbu.mechanics.io import atomic_write_json, read_json
-from honbu.mechanics.markers import (
+from honbu.core.io import atomic_write_json, read_json
+from honbu.core.markers import (
     check_field_path,
     excluded_source_paths,
     identity_bindings,
@@ -49,8 +49,8 @@ from honbu.mechanics.markers import (
     parse_dotted,
     prune_path,
 )
-from honbu.mechanics.model import StrictModel
-from honbu.mechanics.paths import sanitize_path_component
+from honbu.core.model import StrictModel
+from honbu.core.paths import sanitize_path_component
 
 HASHES_DIRNAME = "hashes"
 

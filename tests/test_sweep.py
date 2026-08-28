@@ -15,7 +15,7 @@ from honbu import (
     RuntimeConfig,
     StrictModel,
 )
-from honbu.capabilities import (
+from honbu.sweeps import (
     SweepBlock,
     SweepDeclaration,
     check_root_declares_sweep,

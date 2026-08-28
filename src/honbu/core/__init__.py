@@ -1,4 +1,4 @@
-"""L1 — the mechanics every consuming project inherits, whether or not it adopts
+"""The core every consuming project inherits, whether or not it adopts
 the flow above them.
 
 The placement rule: if duplicating a mechanism caused drift between the sibling
@@ -13,7 +13,7 @@ aesthetic — the whole claim of this layer is that it is usable on a dict you b
 by hand, and one convenience import would quietly end that.
 """
 
-from honbu.mechanics.blocks import (
+from honbu.core.blocks import (
     REQUIRED_BLOCKS,
     ExperimentConfig,
     OutputBlock,
@@ -22,7 +22,7 @@ from honbu.mechanics.blocks import (
     output_block_fields,
     validate_root_contract,
 )
-from honbu.mechanics.canonical import (
+from honbu.core.canonical import (
     CANONICAL_ENCODER_VERSION,
     canonical_bytes,
     canonical_text,
@@ -30,7 +30,7 @@ from honbu.mechanics.canonical import (
     hash_source,
     sha256_bytes,
 )
-from honbu.mechanics.hashes import (
+from honbu.core.hashes import (
     ByteHash,
     FannedHash,
     FieldHash,
@@ -45,9 +45,9 @@ from honbu.mechanics.hashes import (
     verify_hash_entries,
     write_hash_entries,
 )
-from honbu.mechanics.identifiers import deterministic_id, fresh_seed
-from honbu.mechanics.io import atomic_write, atomic_write_json, atomic_write_text, read_json
-from honbu.mechanics.markers import (
+from honbu.core.identifiers import deterministic_id, fresh_seed
+from honbu.core.io import atomic_write, atomic_write_json, atomic_write_text, read_json
+from honbu.core.markers import (
     DERIVED,
     DIRECTIVE,
     IDENTITY,
@@ -79,8 +79,8 @@ from honbu.mechanics.markers import (
     prune_path,
     unmarked_path_fields,
 )
-from honbu.mechanics.model import DEFER, Deferred, StrictModel, backend_kwargs
-from honbu.mechanics.paths import (
+from honbu.core.model import DEFER, Deferred, StrictModel, backend_kwargs
+from honbu.core.paths import (
     is_absolute_uri,
     normalize_separators,
     path_length_refusal,
@@ -88,7 +88,7 @@ from honbu.mechanics.paths import (
     sanitize_path_component,
     sanitize_relative_path,
 )
-from honbu.mechanics.targets import (
+from honbu.core.targets import (
     MANIFEST_NAME,
     RESUMABLE_STATES,
     clear_contents,
@@ -98,7 +98,7 @@ from honbu.mechanics.targets import (
     read_existing_manifest,
     validate_destructive_target,
 )
-from honbu.mechanics.templates import (
+from honbu.core.templates import (
     BUILTIN_FUNCTIONS,
     TemplateContext,
     TemplateFunctionSpec,

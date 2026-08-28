@@ -35,8 +35,8 @@ from honbu.flow.compose import (
     selected_source,
     split_argv,
 )
-from honbu.mechanics.hashes import HashRegistry, declared_path_exists
-from honbu.mechanics.templates import template_value_paths
+from honbu.core.hashes import HashRegistry, declared_path_exists
+from honbu.core.templates import template_value_paths
 
 CommandMode = Literal["produce", "augment"]
 
@@ -453,7 +453,7 @@ def field_default(root_type: type[BaseModel], dotted: str) -> object | None:
     may still override it, so the resolver repeats the check at render time
     against the actual value.
     """
-    from honbu.mechanics.markers import parse_dotted, traversable_submodel
+    from honbu.core.markers import parse_dotted, traversable_submodel
 
     segments = parse_dotted(dotted)
     current: type[BaseModel] | None = root_type

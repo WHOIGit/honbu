@@ -34,15 +34,15 @@ from honbu.errors import RefusalError
 from honbu.flow.commands import CommandSpec
 from honbu.flow.manifest import Manifest
 from honbu.flow.resolve import Resolution, anchor
-from honbu.mechanics.blocks import OutputBlock, OutputLeaf
-from honbu.mechanics.canonical import canonical_bytes, hash_source
-from honbu.mechanics.hashes import (
+from honbu.core.blocks import OutputBlock, OutputLeaf
+from honbu.core.canonical import canonical_bytes, hash_source
+from honbu.core.hashes import (
     HashEntry,
     HashRegistry,
     write_hash_entries,
 )
-from honbu.mechanics.io import atomic_write_text
-from honbu.mechanics.targets import (
+from honbu.core.io import atomic_write_text
+from honbu.core.targets import (
     RESUMABLE_STATES,
     clear_contents,
     prepare_scope,

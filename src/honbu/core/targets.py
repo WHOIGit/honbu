@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from honbu.errors import RefusalError
-from honbu.mechanics.io import read_json
+from honbu.core.io import read_json
 
 #: The run record. Named here because collision validation reads it to describe
 #: what occupies a target before destroying it.

@@ -22,13 +22,13 @@ from typing import Annotated, Any
 from pydantic import BaseModel
 
 from honbu.errors import DeclarationError
-from honbu.mechanics.markers import (
+from honbu.core.markers import (
     IDENTITY,
     PortablePath,
     ResolvedString,
     TemplatedIdentity,
 )
-from honbu.mechanics.model import StrictModel
+from honbu.core.model import StrictModel
 
 #: The conventional name for a whole-configuration digest — a convention, not a
 #: reservation. Honbu neither requires the declaration nor binds it; the name exists

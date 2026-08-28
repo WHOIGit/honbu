@@ -24,7 +24,7 @@ from honbu import (
     TemplateContext,
     TemplatedIdentity,
 )
-from honbu.capabilities import (
+from honbu.sweeps import (
     CHILD_COORDINATE_NAME,
     SWEEP_INDEX_NAME,
     SweepBlock,
@@ -35,7 +35,7 @@ from honbu.capabilities import (
     read_sweep_index,
     sweep_identity,
 )
-from honbu.capabilities.sweep import Coordinate
+from honbu.sweeps import Coordinate
 from honbu.flow import (
     CONFIG_DIRNAME,
     CommandSpec,

@@ -38,12 +38,12 @@ from honbu.flow.compose import (
     prior_config_path,
 )
 from honbu.flow.resolve import Resolution, resolve, strip_resolved_only
-from honbu.mechanics.hashes import HashRegistry, validate_identity_fields
-from honbu.mechanics.io import read_json
-from honbu.mechanics.identifiers import fresh_seed
+from honbu.core.hashes import HashRegistry, validate_identity_fields
+from honbu.core.io import read_json
+from honbu.core.identifiers import fresh_seed
 from honbu.flow.run import COMPOSED_NAME, RESOLVED_NAME, Run, open_run
-from honbu.mechanics.targets import MANIFEST_NAME
-from honbu.mechanics.templates import TemplateContext, TemplateRegistry
+from honbu.core.targets import MANIFEST_NAME
+from honbu.core.templates import TemplateContext, TemplateRegistry
 
 #: A producing or augmenting command's work. Receives the live run; returns
 #: nothing, because the best result is recorded live and *is* the comparison
@@ -298,7 +298,7 @@ class Application:
 
     def _deferred_paths(self) -> tuple[str, ...]:
         """Config paths fed by a deferred hash — what a target template may not name."""
-        from honbu.mechanics.markers import identity_bindings
+        from honbu.core.markers import identity_bindings
 
         deferred = set(self.hashes.deferred_names)
         return tuple(

@@ -34,9 +34,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from honbu.capabilities.prepare import read_sweep_index
-from honbu.mechanics.io import atomic_write_json, read_json
-from honbu.mechanics.targets import MANIFEST_NAME, RESUMABLE_STATES
+from honbu.sweeps.prepare import read_sweep_index
+from honbu.core.io import atomic_write_json, read_json
+from honbu.core.targets import MANIFEST_NAME, RESUMABLE_STATES
 
 #: The sweep's progress cache, beside its ``config/`` rather than inside it.
 SWEEP_MANIFEST_NAME = "manifest.json"

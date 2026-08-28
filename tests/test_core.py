@@ -1,4 +1,4 @@
-"""L1 mechanics: the decisions, asserted.
+"""Core: the decisions, asserted.
 
 Every test here corresponds to a decision taken during design review. A failure
 means a decision was reversed, not merely that code broke.
@@ -53,7 +53,7 @@ from honbu import (
     write_hash_entries,
 )
 from honbu.errors import CanonicalizationError, DeclarationError, TemplateError
-from honbu.mechanics.hashes import ByteHash, declared_path_exists, project_fields
+from honbu.core.hashes import ByteHash, declared_path_exists, project_fields
 
 # --------------------------------------------------------------------------- #
 # schemas used across the tests
@@ -490,7 +490,7 @@ def test_a_failed_write_leaves_the_previous_artifact_intact(tmp_path, monkeypatc
     target = tmp_path / "manifest.json"
     atomic_write_text(target, "original")
 
-    import honbu.mechanics.io as io_module
+    import honbu.core.io as io_module
 
     def explode(*args, **kwargs):
         raise OSError("disk full")
@@ -773,8 +773,8 @@ def test_the_framework_binds_no_hash_of_its_own_accord():
     made declaring a hash mandatory, contradicting "identities are declared, not
     inferred". Both halves are gone: no binding, and a null default.
     """
-    from honbu.mechanics.blocks import RuntimeConfig
-    from honbu.mechanics.markers import identity_bindings
+    from honbu.core.blocks import RuntimeConfig
+    from honbu.core.markers import identity_bindings
 
     assert identity_bindings(RuntimeConfig) == ()
     assert RuntimeConfig.model_fields["config_id"].default is None
@@ -787,7 +787,7 @@ def test_a_project_declaring_no_hashes_is_valid():
 
     from pydantic import Field
 
-    from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
+    from honbu.core.blocks import ExperimentConfig, RuntimeConfig
     class Root(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -801,8 +801,8 @@ def test_binding_a_configuration_identity_is_two_lines():
     from pathlib import Path
     from pydantic import Field
 
-    from honbu.mechanics.blocks import CONFIG_HASH_NAME, ExperimentConfig, RuntimeConfig
-    from honbu.mechanics.markers import TemplatedIdentity
+    from honbu.core.blocks import CONFIG_HASH_NAME, ExperimentConfig, RuntimeConfig
+    from honbu.core.markers import TemplatedIdentity
 
     class Runtime(RuntimeConfig):
         config_hash: Annotated[ResolvedString, FromHash(CONFIG_HASH_NAME)] = None
@@ -829,7 +829,7 @@ def test_sweep_membership_cannot_enter_a_digest():
 
     from pydantic import Field
 
-    from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
+    from honbu.core.blocks import ExperimentConfig, RuntimeConfig
     class Root(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -853,7 +853,7 @@ def test_continuing_from_a_sweep_child_does_not_inherit_membership():
 
     from pydantic import Field
 
-    from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
+    from honbu.core.blocks import ExperimentConfig, RuntimeConfig
     class Root(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)

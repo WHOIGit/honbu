@@ -1,4 +1,4 @@
-## 1. L1 — Mechanics (the non-negotiable core)
+## 1. Core (the non-negotiable foundation)
 
 - [x] 1.1 `errors`: `HonbuError` / `RefusalError` base, so a user-facing refusal
   exits cleanly without a traceback.
@@ -67,12 +67,12 @@
   longest-path matching, declaration-derived help, source loading for all four
   configuration sources, and refusal-versus-defect exit codes.
 
-## 4. L3 — Capabilities
+## 4. Operations
 
 - [x] 4.0 Flatten the install and reverse the reserved hash name (D20, D21):
   compositor, config library and YAML into core dependencies; delete the three
   "install the extra" refusal branches; add the layering guard test asserting no
-  mechanics module imports them; drop the `FromHash` binding from the base runtime
+  core module imports them; drop the `FromHash` binding from the base runtime
   block and default the configuration-identity field to null; add
   `submitit`/`optuna` extras.
 - [x] 4.1 Sweep block and expansion (D22, D24): `gate` / `axes` / `covariant_axes`
@@ -175,3 +175,11 @@
   declare hashes, declare an objective, retype paths to the portable-path marker.
 - [ ] 5.3 Pilot adoption on one branch project (behind a dev branch), then the
   second, reconciling the shared modules against the framework.
+
+## 6. Public package organization
+
+- [x] 6.1 Breaking package refactor: replace `honbu.mechanics` and
+  `honbu.capabilities` with the direct public areas `honbu.core`, `honbu.flow`,
+  `honbu.sweeps`, `honbu.compare`, and `honbu.materialize`; split sweep
+  declaration, axis interpretation, and planning into `definitions`, `axes`, and
+  `plan`; preserve behavior and update tests with the new terminology.

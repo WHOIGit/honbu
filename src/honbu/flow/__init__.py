@@ -1,18 +1,17 @@
 """L2 — the flow: composition, declared commands, and the run record.
 
-A project that wants only the mechanics never imports this package. That used to be
-enforced by packaging — L2's dependencies lived in a ``flow`` extra, so ``mechanics``
+A project that wants only the core never imports this package. That used to be
+enforced by packaging — L2's dependencies lived in a ``flow`` extra, so ``core``
 *could not* reach a composition primitive even by accident. The extra is gone (D20),
-so the boundary is now asserted by a test instead: no module under ``mechanics``
+so the boundary is now asserted by a test instead: no module under ``core``
 imports Hydra, OmegaConf or YAML.
 
 The boundary that matters: composition ends at a plain dict. Everything after —
 validation, identities, templates, paths — belongs to the resolver, which never
 sees argv and never reads a configuration file.
 
-What exists so far: composition and the argv grammar, command declarations, and
-the live run manifest. The resolver that walks the fixed phase order, and the
-lifecycle that drives it, are still to come.
+The package owns composition and argv parsing, command declarations, resolution,
+the lifecycle, and the live run manifest.
 """
 
 from honbu.flow.commands import (

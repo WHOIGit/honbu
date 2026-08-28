@@ -25,9 +25,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from honbu.errors import RefusalError
-from honbu.mechanics.canonical import CANONICAL_ENCODER_VERSION
-from honbu.mechanics.io import atomic_write_json, read_json
-from honbu.mechanics.targets import MANIFEST_NAME
+from honbu.core.canonical import CANONICAL_ENCODER_VERSION
+from honbu.core.io import atomic_write_json, read_json
+from honbu.core.targets import MANIFEST_NAME
 
 RunState = Literal[
     "initialized", "running", "partial", "completed", "interrupted", "failed"

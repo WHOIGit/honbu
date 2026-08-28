@@ -28,25 +28,19 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from honbu.capabilities.gate import check_gate, require_gate
-from honbu.capabilities.sweep import (
-    SWEEP_BLOCK,
-    Coordinate,
-    SweepBlock,
-    SweepPlan,
-    plan_sweep,
-    without_sweep_block,
-)
+from honbu.sweeps.gate import check_gate, require_gate
+from honbu.sweeps.definitions import SWEEP_BLOCK, Coordinate, SweepBlock, without_sweep_block
+from honbu.sweeps.plan import SweepPlan, plan_sweep
 from honbu.errors import RefusalError
 from honbu.flow.commands import CommandSpec
 from honbu.flow.resolve import Resolution, resolve
 from honbu.flow.run import CONFIG_DIRNAME, initialize_run
-from honbu.mechanics.hashes import HashRegistry
-from honbu.mechanics.identifiers import deterministic_id
-from honbu.mechanics.io import atomic_write_json
-from honbu.mechanics.markers import parse_dotted
-from honbu.mechanics.targets import MANIFEST_NAME
-from honbu.mechanics.templates import TemplateContext
+from honbu.core.hashes import HashRegistry
+from honbu.core.identifiers import deterministic_id
+from honbu.core.io import atomic_write_json
+from honbu.core.markers import parse_dotted
+from honbu.core.targets import MANIFEST_NAME
+from honbu.core.templates import TemplateContext
 
 #: The child's own record of what produced it, beside its configuration bundle.
 #: In the configuration directory rather than the manifest because it describes the
@@ -246,7 +240,7 @@ def prepare_sweep(
     it keeps its identity, keeps the children it has, and adds the ones the
     definition gained.
     """
-    from honbu.capabilities.sweep import sweep_block_of
+    from honbu.sweeps import sweep_block_of
 
     block = block if block is not None else sweep_block_of(composed, root_type=root_type)
     if block is None:
@@ -360,7 +354,7 @@ def _check_gate_over(
     resolve_first: Callable[[TemplateContext], Resolution],
 ) -> None:
     """Every gate check, over the whole expansion, before anything is written."""
-    from honbu.capabilities.gate import read_path
+    from honbu.sweeps.gate import read_path
 
     if command.target is None:
         raise RefusalError(
@@ -390,7 +384,7 @@ def _write_child(
     argv_text: str,
 ) -> PreparedChild:
     """Write one child in the initialized state, or leave an existing one alone."""
-    from honbu.capabilities.gate import read_path
+    from honbu.sweeps.gate import read_path
 
     target = resolution.target
     assert target is not None  # guaranteed by the target check above
@@ -502,7 +496,7 @@ def write_sweep_index(
 
 def read_sweep_index(sweep_dir: Path) -> dict[str, Any]:
     """The index, or a refusal naming what is missing."""
-    from honbu.mechanics.io import read_json
+    from honbu.core.io import read_json
 
     path = sweep_dir / CONFIG_DIRNAME / SWEEP_INDEX_NAME
     if not path.is_file():

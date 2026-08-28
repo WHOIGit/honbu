@@ -1,6 +1,6 @@
 """L2 flow: command declarations, the root contract, and the run manifest.
 
-Same rule as the mechanics tests — each of these pins a decision taken during
+Same rule as the core tests — each of these pins a decision taken during
 review, so a failure means a decision was reversed.
 """
 

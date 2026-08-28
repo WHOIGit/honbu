@@ -40,33 +40,36 @@ design's single load-bearing assumption; everything below assumes it.
 
 ## Decisions
 
-### D1 — Layered spine + organs; the project holds the loop
+### D1 — Core, flow, and direct operation areas; the project holds the loop
 
-Three layers, each opt-in by *import* — see D20, which flattened the install:
+Two dependency layers and three direct operation areas are opt-in by *import* —
+see D20, which flattened the install:
 
 ```
-  L3  CAPABILITIES   sweeps · run-comparison · ensemble-assessment ·
-                     inspect scaffolding
-  L2  FLOW           compose→resolve→collide→persist→work→complete ·
+  honbu.sweeps       declaration · planning · preparation · execution adapters
+  honbu.compare      run/config comparison · reconciliation · ensemble assessment
+  honbu.materialize  config-tree materialization · local/package drift
+             ↑
+  honbu.flow         compose→resolve→collide→persist→work→complete ·
                      CLI dash-grammar · provenance bundle · run manifest
-  L1  MECHANICS      canonical JSON · hash_source · IDs · strict-model base ·
+             ↑
+  honbu.core         canonical JSON · hash_source · IDs · strict-model base ·
                      markers + walkers · atomic writes · template rendering ·
                      collision validation
-  organs plug at every layer: schema blocks · command→active-blocks map ·
-  work functions · domain hashes · output topology · backends
 ```
 
-The project is the main loop and reaches into the spine (it is not called by an
+The project is the main loop and reaches into these areas (it is not called by an
 inversion-of-control frame). Rationale: a framework that must accommodate more
 than one domain cannot dictate the flow; the escape hatch must be "don't call
 that part," not "fight the frame." **Placement rule:** if duplicating a mechanism
-caused drift, it is L1 and non-negotiable (canonical JSON, the `version`
+caused drift, it is core and non-negotiable (canonical JSON, the `version`
 convention, marker exclusion).
 
-**The numbering is a dependency ordering, not a stack of altitudes.** Composition
-and identity, in particular, are *siblings*: neither imports the other, and the
-first thing needing both is resolution. A reader who takes L2 as "above" L1
-conceptually will look for a coupling that is not there.
+`core` and `flow` state the dependency direction. `sweeps`, `compare`, and
+`materialize` are peer public areas rather than a catch-all layer: each can build
+on core/flow, but lower layers never import them. The names are intentionally
+breaking — no compatibility modules preserve `honbu.mechanics` or
+`honbu.capabilities`.
 
 ### D2 — Schema composition: project assembles from framework block *types*
 
@@ -647,13 +650,13 @@ exactly the person least equipped to choose.
 Two things this gives up, one of which is bought back:
 
 *Structural enforcement of the layering.* It was previously **impossible** for
-`mechanics/` to import a composition primitive, because the package was not
+`core/` to import a composition primitive, because the package was not
 installed. That is now convention. It is bought back with a test asserting that no
-module under `mechanics/` imports hydra, omegaconf or yaml — cheap, and treated as
+module under `core/` imports hydra, omegaconf or yaml — cheap, and treated as
 non-optional, because "two modules that should be independent quietly grow a
 dependency" is the drift Honbu exists to remove.
 
-*The zero-dependency mechanics case.* A project wanting only the canonical encoder
+*The zero-dependency core case.* A project wanting only the canonical encoder
 and the markers now installs antlr to get them. Not bought back; judged not worth
 an extras matrix.
 
@@ -1008,6 +1011,21 @@ The identity is derived from the path on first write and then persisted, which
 costs nothing and buys two things: a first preparation is reproducible without
 consulting any state, and a directory that is later moved keeps its identity rather
 than quietly becoming a different sweep.
+
+### D30 — Sweeps split at declaration, axes, and planning
+
+`honbu.sweeps` is a public operation area, not a single implementation module.
+Its declaration types and root-contract helpers live in `definitions`; axis
+normalization, classification, and cartesian expansion live in `axes`; the
+cross-axis policy and `SweepPlan` construction live in `plan`. Gate checks,
+preparation, and progress/execution remain their own modules. The package
+re-exports the intended public API so callers import `honbu.sweeps` rather than
+depending on the internal split.
+
+This separates stable declaration vocabulary from the policy that turns it into a
+concrete matrix, without prematurely splitting every individual check into a
+module. Future execution adapters belong under `honbu.sweeps` because they enact
+one prepared sweep rather than defining a framework-wide integration surface.
 
 ## Risks / Trade-offs
 

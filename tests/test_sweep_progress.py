@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from honbu import RefusalError
-from honbu.capabilities import (
+from honbu.sweeps import (
     MISSING,
     SWEEP_MANIFEST_NAME,
     child_argv,

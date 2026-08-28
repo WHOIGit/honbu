@@ -18,7 +18,7 @@ requires-python = ">=3.12"
 # job was to say "install the flow extra", firing during someone's first command,
 # plus an extras matrix presented at adoption time to the person least equipped to
 # choose. Since installation no longer enforces the layering, a test does: no
-# module under mechanics/ may import hydra, omegaconf or yaml.
+# module under core/ may import hydra, omegaconf or yaml.
 #
 # Nothing here depends on a training engine, a data format, or a metric.
 #

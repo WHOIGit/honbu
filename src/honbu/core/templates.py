@@ -35,8 +35,8 @@ from datetime import datetime
 from typing import Any
 
 from honbu.errors import TemplateError
-from honbu.mechanics.identifiers import deterministic_id
-from honbu.mechanics.paths import sanitization_warning, sanitize_relative_path
+from honbu.core.identifiers import deterministic_id
+from honbu.core.paths import sanitization_warning, sanitize_relative_path
 
 _TOKEN = re.compile(r"\{([^{}]*)\}")
 

@@ -8,7 +8,7 @@ is to report a missing optional dependency at invocation time.
 Layers SHALL remain boundaries of *import* rather than of installation: a project
 opts out of a capability by not importing it. Because installation no longer
 enforces the boundary, the framework SHALL assert it instead — no module in the
-mechanics layer SHALL import the compositor, its configuration library, or a YAML
+core layer SHALL import the compositor, its configuration library, or a YAML
 implementation, and this SHALL be verified by test rather than by convention.
 
 Genuine execution backends — job submitters, hyperparameter search engines — SHALL
@@ -19,8 +19,8 @@ framework adapts to rather than capabilities it implements.
 - **WHEN** the framework is installed with no extras selected
 - **THEN** composition, resolution, persistence and the run lifecycle all work
 
-#### Scenario: Mechanics stay independent of the compositor
-- **WHEN** a mechanics-layer module is checked for its imports
+#### Scenario: Core stays independent of the compositor
+- **WHEN** a core-layer module is checked for its imports
 - **THEN** it imports no compositor, configuration library, or YAML implementation
 
 #### Scenario: A launcher is absent

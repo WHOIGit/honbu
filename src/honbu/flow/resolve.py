@@ -37,9 +37,9 @@ from pydantic import BaseModel
 
 from honbu.errors import RefusalError
 from honbu.flow.commands import CommandSpec
-from honbu.mechanics.blocks import OutputBlock, OutputLeaf, output_block_fields
-from honbu.mechanics.hashes import HashEntry, HashRegistry
-from honbu.mechanics.markers import (
+from honbu.core.blocks import OutputBlock, OutputLeaf, output_block_fields
+from honbu.core.hashes import HashEntry, HashRegistry
+from honbu.core.markers import (
     WILDCARD,
     PathMarker,
     ResolvedOnlyMarker,
@@ -49,8 +49,8 @@ from honbu.mechanics.markers import (
     marked_field_paths,
     prune_path,
 )
-from honbu.mechanics.paths import path_length_refusal
-from honbu.mechanics.templates import (
+from honbu.core.paths import path_length_refusal
+from honbu.core.templates import (
     TemplateContext,
     TemplateRegistry,
     render_template,

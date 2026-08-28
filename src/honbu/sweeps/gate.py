@@ -33,8 +33,8 @@ from typing import Any
 from pydantic import BaseModel
 
 from honbu.errors import RefusalError
-from honbu.mechanics.markers import parse_dotted
-from honbu.mechanics.templates import TemplateContext, template_value_paths
+from honbu.core.markers import parse_dotted
+from honbu.core.templates import TemplateContext, template_value_paths
 
 #: A resolver bound to one configuration, parameterized only by the invocation
 #: context. Preparation supplies it, so this module needs to know nothing about

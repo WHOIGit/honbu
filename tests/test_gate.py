@@ -22,7 +22,7 @@ from honbu import (
     StrictModel,
     TemplatedIdentity,
 )
-from honbu.capabilities import (
+from honbu.sweeps import (
     Coordinate,
     SweepBlock,
     SweepDeclaration,

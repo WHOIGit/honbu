@@ -22,14 +22,15 @@ foundation stays canonical by construction instead of by manual correction.
 - Provide a **layered spine** a project adopts at whatever depth fits. One
   install carries every layer; a project opts out of a layer by not importing it,
   and only genuine execution backends are optional dependencies.
-  - **Mechanics**: canonical JSON, `hash_source`, deterministic
+  - **Core**: canonical JSON, `hash_source`, deterministic
     human IDs, the strict-model base and field markers, marker walkers, atomic
     writes, output-path template rendering, collision validation.
   - **Flow**: the `compose → resolve → collision-check → persist →
     work → complete` command lifecycle, the dash-rule CLI grammar, the config
     provenance bundle, and the run manifest.
-  - **Capabilities**: parameter sweeps, run comparison, and ensemble
-    assessment — built once on the mechanics/flow and shared by every project.
+  - **Operations**: `sweeps`, `compare`, and `materialize` are direct public
+    package areas built on core/flow; they provide parameter sweeps, run
+    comparison, ensemble assessment, and configuration materialization.
   - Composition and identity are **siblings** within this ordering, not stacked:
     neither depends on the other, and resolution is the first thing needing both.
 - Make **sweeps stoppable**: preparation resolves and materializes every child
@@ -119,6 +120,10 @@ to model it.
   the compositor, so every install can compose, persist and run; the accepted cost
   is an inherited exact pin on the compositor's parser runtime. Job submitters and
   hyperparameter search engines stay optional.
+- The public package layout is a deliberate breaking surface:
+  `honbu.core`, `honbu.flow`, `honbu.sweeps`, `honbu.compare`, and
+  `honbu.materialize`. The old `honbu.mechanics` and `honbu.capabilities` paths
+  are removed rather than preserved as compatibility shims.
 - Downstream: `sati` and `dojo` adopt Honbu as a dependency and re-express their
   `config_loader`, schema base, hashing, and lifecycle modules in terms of it,
   keeping only their domain blocks, commands, backends, and results. Adoption
