@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
-
 import pytest
 from pydantic import Field
 
@@ -14,7 +12,6 @@ from honbu import (
     PortablePath,
     RefusalError,
     ResolvedPath,
-    ResolvedString,
     RuntimeConfig,
     StrictModel,
 )

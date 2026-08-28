@@ -375,7 +375,7 @@ def test_a_run_can_be_initialized_now_and_worked_later(tmp_path):
 
 def test_resume_appends_a_resumed_event(tmp_path):
     with pytest.raises(ValueError):
-        with _open(tmp_path) as run:
+        with _open(tmp_path):
             raise ValueError("boom")
     with _open(tmp_path, resume=True) as second:
         pass
@@ -668,7 +668,7 @@ def test_an_augmenting_command_cannot_un_complete_a_run(tmp_path):
 
     target = run.run_dir
     with pytest.raises(ValueError):
-        with _open(tmp_path, command=EVAL, existing_target=target) as augmenting:
+        with _open(tmp_path, command=EVAL, existing_target=target):
             raise ValueError("evaluation blew up")
 
     reopened = Manifest.load(target)

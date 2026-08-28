@@ -41,7 +41,7 @@ from honbu.flow.resolve import Resolution, resolve, strip_resolved_only
 from honbu.mechanics.hashes import HashRegistry, validate_identity_fields
 from honbu.mechanics.io import read_json
 from honbu.mechanics.identifiers import fresh_seed
-from honbu.flow.run import COMPOSED_NAME, RESOLVED_NAME, Run, initialize_run, open_run
+from honbu.flow.run import COMPOSED_NAME, RESOLVED_NAME, Run, open_run
 from honbu.mechanics.targets import MANIFEST_NAME
 from honbu.mechanics.templates import TemplateContext, TemplateRegistry
 

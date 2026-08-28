@@ -438,13 +438,21 @@ A child's state SHALL be held solely in that child's own manifest, and the sweep
 state SHALL be the aggregate. Nothing but a child SHALL write a child's manifest,
 so the two can never disagree.
 
-The sweep manifest SHALL hold two zones with different rules. The **index** —
+The sweep's record SHALL hold two zones with different rules. The **index** —
 children, coordinates, gate values, realized axis values, run directories — SHALL
 hold entries that are immutable once written, and SHALL accumulate: preparing a
 grown definition adds entries and rewrites none, the way a run's manifest
 accumulates invocations. No child's state SHALL be stored there. The **progress**
 zone SHALL be a cache: every value in it SHALL be derivable by rescanning the
 children, and it SHALL carry the time it was last refreshed.
+
+The two zones SHALL live in separate files, where a run's state and index
+deliberately share one. A run's manifest keeps them together because one writer
+owns both and splitting them would let them disagree; here the reverse holds. The
+index is written by preparation and is permanent, the progress zone is written by
+whatever refreshed last and is disposable, and the children own the truth that
+neither of them holds. Putting a disposable cache inside a permanent record invites
+the trust the cache must never be given.
 
 The progress zone SHALL never be authoritative. It exists so a human can read a
 sweep's state at a glance without invoking a tool, which is worth having; but a
@@ -479,6 +487,15 @@ repeat none. Deleting the progress zone SHALL NOT change what execution does.
 #### Scenario: Cache is rebuilt, never trusted
 - **WHEN** the progress zone is deleted or disagrees with the children
 - **THEN** rescanning restores it, and no operation's behavior changed
+
+#### Scenario: A pass that does not finish still leaves a current cache
+- **WHEN** an execution pass is interrupted or a child raises
+- **THEN** the cache is refreshed before the pass returns, so the file describes the
+  sweep as it now is rather than as it was when the pass began
+
+#### Scenario: A retired child is not executed
+- **WHEN** a sweep with a retired child is executed
+- **THEN** the retired child is neither run nor counted, and remains recorded
 
 #### Scenario: Children run outside the driver
 - **WHEN** children are run by an external scheduler that updates only their own

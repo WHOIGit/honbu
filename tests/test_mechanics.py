@@ -788,8 +788,6 @@ def test_a_project_declaring_no_hashes_is_valid():
     from pydantic import Field
 
     from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
-    from honbu.mechanics.markers import PortablePath
-
     class Root(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -801,17 +799,10 @@ def test_a_project_declaring_no_hashes_is_valid():
 def test_binding_a_configuration_identity_is_two_lines():
     """The opt-in the adoption guide leads with, exercised as documentation."""
     from pathlib import Path
-    from typing import Annotated
-
     from pydantic import Field
 
     from honbu.mechanics.blocks import CONFIG_HASH_NAME, ExperimentConfig, RuntimeConfig
-    from honbu.mechanics.markers import (
-        FromHash,
-        PortablePath,
-        ResolvedString,
-        TemplatedIdentity,
-    )
+    from honbu.mechanics.markers import TemplatedIdentity
 
     class Runtime(RuntimeConfig):
         config_hash: Annotated[ResolvedString, FromHash(CONFIG_HASH_NAME)] = None
@@ -839,8 +830,6 @@ def test_sweep_membership_cannot_enter_a_digest():
     from pydantic import Field
 
     from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
-    from honbu.mechanics.markers import PortablePath
-
     class Root(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -865,8 +854,6 @@ def test_continuing_from_a_sweep_child_does_not_inherit_membership():
     from pydantic import Field
 
     from honbu.mechanics.blocks import ExperimentConfig, RuntimeConfig
-    from honbu.mechanics.markers import PortablePath
-
     class Root(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)

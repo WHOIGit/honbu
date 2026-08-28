@@ -110,9 +110,13 @@
     takes a sweep directory rather than deriving one, since a sweep-level output
     block needs a root schema of its own and that belongs with sweep-level reporting
     (4.1f), not with writing children.
-- [ ] 4.1c Execution and status derived from the children's manifests: skip
+- [x] 4.1c Execution and status derived from the children's manifests: skip
   completed, resume every resumable state, uniform `--resolved <child> --resume`
-  invocation, and stop/resume verified by test.
+  invocation, and stop/resume verified by test — including end to end against the
+  demo, paused mid-sweep and resumed. The driver holds no state and reports none:
+  where an interrupted pass stopped is derivable by refreshing, so returning its own
+  account of it would be the state this design exists to not have. A missing child
+  is reported rather than passed over; a retired one is neither run nor counted.
 - [ ] 4.1d Optional execution adapters: local sequential needing no extra, a job
   submitter, and a search-driven sweeper reading its objective from a child's
   recorded best metrics rather than a work-function return value.
@@ -131,9 +135,13 @@
   project adds; the block left optional rather than requirable; and verification at
   the point a sweep is asked for that the field is both declared and marked, since
   omitting the marker fails silently.
-- [ ] 4.1f Sweep manifest (D23): the immutable index zone, the rebuildable progress
-  cache with its refresh time, refresh-before-report, and a test that deleting the
-  cache changes no behavior.
+- [x] 4.1f Sweep manifest (D23): the accumulating index zone, the rebuildable
+  progress cache with its refresh time, refresh-before-report, and tests that
+  deleting *or corrupting* the cache changes neither what is reported nor what
+  execution does. The two zones are two files, unlike a run's single manifest,
+  because their durability rules are opposite: a permanent record written by
+  preparation and a disposable cache written by whoever refreshed last, with the
+  children owning the truth neither holds.
 - [x] 4.5 Completion and the reserved surface (D25): a producing command's declared
   completion set defaulting to all steps; the `partial` state joining the resumable
   set; augmenting commands no longer recording started/finished or failing a

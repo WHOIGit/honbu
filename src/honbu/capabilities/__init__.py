@@ -35,6 +35,20 @@ from honbu.capabilities.prepare import (
     sweep_identity,
     write_sweep_index,
 )
+from honbu.capabilities.progress import (
+    MISSING,
+    SWEEP_MANIFEST_NAME,
+    ChildStatus,
+    ExecutionResult,
+    RunChild,
+    SweepStatus,
+    child_argv,
+    execute_sweep,
+    read_progress,
+    refresh_sweep,
+    scan_sweep,
+    write_progress,
+)
 from honbu.capabilities.sweep import (
     SWEEP_BLOCK,
     Axis,
@@ -63,6 +77,18 @@ from honbu.capabilities.sweep import (
 )
 
 __all__ = [
+    "MISSING",
+    "SWEEP_MANIFEST_NAME",
+    "ChildStatus",
+    "ExecutionResult",
+    "RunChild",
+    "SweepStatus",
+    "child_argv",
+    "execute_sweep",
+    "read_progress",
+    "refresh_sweep",
+    "scan_sweep",
+    "write_progress",
     "CHILD_COORDINATE_NAME",
     "SWEEP_INDEX_NAME",
     "Preparation",
