@@ -18,7 +18,12 @@ the other, and resolution is the first thing that needs both.
   live run manifest, and the CLI grammar.
 * **L3 capabilities** — sweeps, run comparison, ensemble assessment.
 
-L1 and L2 are complete. L3 does not exist yet.
+L1 and L2 are complete. L3 is under construction: the sweep block and its
+expansion exist; preparation, execution and comparison do not yet.
+
+The mechanics are re-exported here for convenience. ``honbu.flow`` and
+``honbu.capabilities`` are not, so importing Honbu never pulls a layer a project
+did not ask for.
 """
 
 from honbu.errors import (

@@ -391,6 +391,31 @@ def check_overrides(overrides: Sequence[str]) -> None:
         )
 
 
+def force_add_sweep_overrides(overrides: Sequence[str]) -> list[str]:
+    """Rewrite a bare ``sweep.*`` override to the compositor's force-add form.
+
+    The sweep block is an *open* mapping: its axis keys are configuration paths the
+    caller chooses, so they cannot be pre-declared in the authored YAML the way an
+    ordinary field is. The compositor composes in struct mode, where assigning a key
+    that does not already exist is an error advising a ``+`` prefix — which would
+    make ``sweep.axes.epochs=[10,20]`` fail for the sole reason that no previous
+    sweep happened to use ``epochs``, and would make the prefix depend on the
+    authored file rather than on what the caller meant.
+
+    Since every key under the block is open by construction, the prefix carries no
+    information and Honbu supplies it. ``++`` rather than ``+`` because force-add
+    also *replaces*, so redeclaring an axis the base configuration already sets
+    behaves like any other override instead of failing as a duplicate.
+
+    An explicitly prefixed token is left alone: someone writing ``~sweep.axes.epochs``
+    to delete an axis means it.
+    """
+    prefix = f"{SWEEP_BLOCK}."
+    return [
+        f"++{token}" if token.startswith(prefix) else token for token in overrides
+    ]
+
+
 def compose_config(
     spec: ComposeSpec,
     *,
@@ -400,6 +425,7 @@ def compose_config(
 ) -> dict[str, Any]:
     """Compose the default root into a plain dict."""
     check_overrides(overrides)
+    overrides = force_add_sweep_overrides(overrides)
     search = build_search_path(spec, extra_dirs, cwd=cwd)
 
     primary = next(

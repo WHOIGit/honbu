@@ -75,11 +75,14 @@
   mechanics module imports them; drop the `FromHash` binding from the base runtime
   block and default the configuration-identity field to null; add
   `submitit`/`optuna` extras.
-- [ ] 4.1 Sweep block and expansion (D22, D24): `gate` / `axes` / `covariant_axes`
+- [x] 4.1 Sweep block and expansion (D22, D24): `gate` / `axes` / `covariant_axes`
   as an open mapping in the root schema, flat-and-nested key normalization recorded
   per child, one dimension per axis whatever its kind, the bare-top-level-comma
   refusal pointing at the block, and the sweep-definition digest under the standard
-  exclusions.
+  exclusions. The open mapping needs one accommodation the spec did not anticipate:
+  the compositor composes in struct mode, so a bare `sweep.axes.<path>=` is rewritten
+  to its force-add form, since every key under the block is open by construction and
+  the prefix would otherwise depend on whether a previous sweep used that key.
 - [ ] 4.1a The child-distinguishing gate: declared identifier, stability
   verification by resolving under two invocation contexts, the
   must-appear-in-the-output-template rule, and a refusal naming colliding children

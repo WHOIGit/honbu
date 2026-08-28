@@ -1,9 +1,9 @@
 """Composition: the argv grammar, configuration sources, and the search path.
 
-Hydra itself lives in the ``flow`` extra and is not installed here, so
-``compose_config`` is exercised only up to the point where it would call it.
-Everything below that line — the split, the source rules, the precedence — is what
-actually drifted between the two projects, and is what these tests pin.
+The split, the source rules and the precedence are what actually drifted between
+the two projects, and are what these tests pin. The compositor is a core
+dependency (D20), so composition itself is exercised end to end rather than only
+up to the call.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from honbu.errors import DeclarationError
 from honbu.flow import (
     check_overrides,
     compose_config,
+    force_add_sweep_overrides,
     CommandRegistry,
     CommandSpec,
     ComposeSpec,
@@ -380,4 +381,88 @@ def test_a_composition_error_is_a_refusal_not_a_traceback(tmp_path):
             ComposeSpec(packaged=None, local="configs"),
             overrides=["nonexistent.key=2"],
             cwd=tmp_path,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# the sweep block is an open mapping, so its keys need no addition prefix
+# --------------------------------------------------------------------------- #
+
+
+def sweeping(tmp_path):
+    """A configuration carrying an empty sweep block, as a project would ship it."""
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "config.yaml").write_text(
+        "epochs: 3\nsweep:\n  gate: null\n  axes: {}\n  covariant_axes: {}\n"
+    )
+    return ComposeSpec(packaged=None, local="configs")
+
+
+def test_a_bare_sweep_override_is_rewritten_to_the_force_add_form():
+    assert force_add_sweep_overrides(["sweep.axes.epochs=[10,20]"]) == [
+        "++sweep.axes.epochs=[10,20]"
+    ]
+
+
+def test_overrides_outside_the_sweep_block_are_untouched():
+    tokens = ["epochs=10", "sweeping.thing=1", "+new.key=2", "~old.key"]
+    assert force_add_sweep_overrides(tokens) == tokens
+
+
+def test_an_explicitly_prefixed_sweep_override_is_left_alone():
+    """Someone deleting an axis with ``~`` means it."""
+    tokens = ["~sweep.axes.epochs", "+sweep.axes.lr=[0.1]", "++sweep.gate=x"]
+    assert force_add_sweep_overrides(tokens) == tokens
+
+
+def test_a_new_axis_composes_without_the_caller_supplying_a_prefix(tmp_path):
+    """The claim the open-mapping requirement rests on.
+
+    Struct mode would otherwise refuse an axis key for the sole reason that no
+    previous sweep used it, making the prefix depend on the authored file rather
+    than on what the caller meant.
+    """
+    spec = sweeping(tmp_path)
+    composed = compose_config(
+        spec, overrides=["sweep.axes.epochs=[10,20]"], cwd=tmp_path
+    )
+    assert composed["sweep"]["axes"] == {"epochs": [10, 20]}
+
+
+def test_a_nested_axis_key_composes_and_arrives_nested(tmp_path):
+    """Which is why normalization exists: the compositor reads every dot as a level."""
+    composed = compose_config(
+        sweeping(tmp_path), overrides=["sweep.axes.model.backbone=[a,b]"], cwd=tmp_path
+    )
+    assert composed["sweep"]["axes"] == {"model": {"backbone": ["a", "b"]}}
+
+
+def test_redeclaring_an_axis_replaces_rather_than_failing_as_a_duplicate(tmp_path):
+    """``++`` rather than ``+``: an axis the base configuration already sets is
+    overridden like any other value."""
+    composed = compose_config(
+        sweeping(tmp_path),
+        overrides=["sweep.axes.epochs=[10,20]", "sweep.axes.epochs=[30]"],
+        cwd=tmp_path,
+    )
+    assert composed["sweep"]["axes"] == {"epochs": [30]}
+
+
+def test_a_covariant_axis_composes_from_the_command_line(tmp_path):
+    composed = compose_config(
+        sweeping(tmp_path),
+        overrides=["sweep.covariant_axes.arch=[{lr:0.1,bs:8},{lr:0.2,bs:16}]"],
+        cwd=tmp_path,
+    )
+    assert composed["sweep"]["covariant_axes"]["arch"] == [
+        {"lr": 0.1, "bs": 8},
+        {"lr": 0.2, "bs": 16},
+    ]
+
+
+def test_a_comma_axis_inside_the_block_is_still_refused(tmp_path):
+    """The rewrite does not smuggle multirun grammar in through the block."""
+    with pytest.raises(RefusalError, match="multi-value sweep"):
+        compose_config(
+            sweeping(tmp_path), overrides=["sweep.axes.epochs=10,20"], cwd=tmp_path
         )

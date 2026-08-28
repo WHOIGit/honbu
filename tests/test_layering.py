@@ -15,7 +15,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-MECHANICS = Path(__file__).resolve().parent.parent / "src" / "honbu" / "mechanics"
+SRC = Path(__file__).resolve().parent.parent / "src" / "honbu"
+MECHANICS = SRC / "mechanics"
+FLOW = SRC / "flow"
 
 #: Packages the mechanics layer must stay clear of. Not a style rule: the layer's
 #: whole claim is that it works on a dict you built by hand, and one import of a
@@ -55,22 +57,40 @@ def test_the_scan_would_catch_a_lazy_import():
     assert _imported_roots("def f():\n    import omegaconf\n") == {"omegaconf"}
 
 
+def _honbu_imports(source: str) -> set[str]:
+    """Every ``honbu.*`` module a source file imports, lazily or otherwise."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        module = (
+            node.module if isinstance(node, ast.ImportFrom) and node.level == 0 else None
+        )
+        names = [a.name for a in node.names] if isinstance(node, ast.Import) else []
+        found.update(c for c in filter(None, [module, *names]) if c.startswith("honbu."))
+    return found
+
+
 def test_mechanics_is_importable_without_touching_flow():
     """The layer boundary in the other direction: importing the mechanics must not
     drag in the flow package, or 'take only the mechanics' would be untrue."""
     for path in sorted(MECHANICS.rglob("*.py")):
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            module = (
-                node.module
-                if isinstance(node, ast.ImportFrom) and node.level == 0
-                else None
+        for candidate in _honbu_imports(path.read_text()):
+            assert not candidate.startswith("honbu.flow"), (
+                f"{path.name} imports {candidate}; the mechanics layer cannot "
+                "depend on the flow above it"
             )
-            names = (
-                [a.name for a in node.names] if isinstance(node, ast.Import) else []
+
+
+def test_nothing_below_the_capabilities_reaches_up_into_them():
+    """L3 is optional in the only sense that matters: nothing below needs it.
+
+    A sweep, a comparison and a materialization all span more than one run, or read
+    a configuration without running one. If flow reached into them, resolving a
+    configuration would drag in the whole of L3, and 'adopt the depth you want'
+    would be a claim with nothing behind it.
+    """
+    for path in sorted([*MECHANICS.rglob("*.py"), *FLOW.rglob("*.py")]):
+        for candidate in _honbu_imports(path.read_text()):
+            assert not candidate.startswith("honbu.capabilities"), (
+                f"{path.relative_to(SRC)} imports {candidate}; the capabilities are "
+                "built on the layers below and cannot be depended on by them"
             )
-            for candidate in filter(None, [module, *names]):
-                assert not candidate.startswith("honbu.flow"), (
-                    f"{path.name} imports {candidate}; the mechanics layer cannot "
-                    "depend on the flow above it"
-                )

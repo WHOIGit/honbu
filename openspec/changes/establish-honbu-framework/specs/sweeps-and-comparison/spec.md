@@ -13,6 +13,15 @@ overrides, requiring no new grammar and no dedicated option — the axis contain
 SHALL be an open mapping in the root schema so that an override addressing a path
 inside it needs no addition prefix.
 
+The compositor composes in struct mode, where assigning a key that does not
+already exist is an error. Since every key under the axis container is open by
+construction, the framework SHALL supply the addition prefix itself rather than
+require it: otherwise the prefix would depend on whether some previous sweep
+happened to use that key, which is a fact about the authored file and not about
+what the caller meant. The supplied form SHALL also replace, so redeclaring an
+axis behaves like any other override instead of failing as a duplicate. An
+explicitly prefixed token SHALL be left as written.
+
 #### Scenario: Axes authored in configuration
 - **WHEN** a configuration carries a sweep block with axes
 - **THEN** preparation expands them
@@ -22,6 +31,10 @@ inside it needs no addition prefix.
   container
 - **THEN** they are expanded identically to authored axes, with no addition prefix
   required
+
+#### Scenario: An axis is redeclared
+- **WHEN** an override declares an axis the base configuration already sets
+- **THEN** it replaces that axis rather than failing as a duplicate key
 
 #### Scenario: A field-level sweep declaration is refused
 - **WHEN** a configuration supplies a list where the schema declares a scalar
@@ -74,6 +87,20 @@ An axis whose values name configuration-group options SHALL select whole group
 files, applied during composition. A covariant axis SHALL assign dotted paths
 directly, applied after composition.
 
+Which of the two an axis is SHALL follow from the schema rather than from a
+separate declaration: an axis whose path names a block-typed field and whose
+values are names SHALL be read as a group axis, because assigning a name to a
+block-typed field could not validate — that is the same refusal arriving later and
+per child. Every other axis SHALL be a path axis, including one whose values are
+whole sub-trees, which assigns rather than selects.
+
+A consequence SHALL be documented: a group whose package path names no field of
+the root schema — a group promoted to the root by a global package header — cannot
+be recognized this way, and its axis SHALL be refused by path validation rather
+than guessed at. Inferring a group axis from a path the schema does not know would
+reinterpret a misspelled path as a group selection, which is exactly the mistake
+axis-path validation exists to catch.
+
 The two SHALL NOT be treated as interchangeable, because a group file's package
 path is static: it cannot target a location whose key the configuration chose, such
 as a field inside a mapping keyed by a name. Any path below such a container is
@@ -88,6 +115,10 @@ an ablation silently fails to ablate.
 #### Scenario: Group axis selects whole files
 - **WHEN** an axis's values name options of a configuration group
 - **THEN** each child composes with that option selected
+
+#### Scenario: An axis assigning whole sub-trees is not a group axis
+- **WHEN** an axis over a block-typed field lists mappings rather than names
+- **THEN** it assigns those sub-trees after composition rather than selecting files
 
 #### Scenario: Group axis cannot reach inside a container
 - **WHEN** a bundle of settings must be applied at a configuration-chosen key
