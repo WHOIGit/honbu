@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 from hydra import compose, initialize_config_dir
 from hydra.errors import HydraException
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, open_dict
 
 from honbu.errors import RefusalError
 
@@ -102,6 +102,14 @@ class ComposeSpec:
     packaged: str | None = None
     local: str = "configs"
     config_name: str = "config"
+
+
+@dataclass(frozen=True)
+class Composition:
+    """A composed mapping plus Hydra's recorded group selections."""
+
+    config: dict[str, Any]
+    choices: Mapping[str, str]
 
 
 @dataclass(frozen=True)
@@ -281,7 +289,10 @@ def compose_file(path: Path | str, *, overrides: Sequence[str] = ()) -> dict[str
     ``--resolved <run> epochs=50`` behave like every other invocation rather than
     being a second, weaker override mechanism.
     """
-    target = Path(path)
+    # The config directory also becomes the composition working context. Resolve
+    # first so a relative provenance-bundle path is not joined to that context a
+    # second time (for example ``runs/x/config/resolved.yaml``).
+    target = Path(path).resolve()
     if not target.is_file():
         raise RefusalError(f"configuration file does not exist: {target}")
     spec = ComposeSpec(packaged=None, local=str(target.parent), config_name=target.stem)
@@ -300,7 +311,10 @@ def prior_config_path(
     """
     from honbu.flow.run import CONFIG_DIRNAME, config_dir_for
 
-    candidate = Path(reference)
+    # Run directories become output targets during augmenting resolution. Keep
+    # them absolute so they can be relativized to an absolute output root exactly
+    # once; a relative reference otherwise becomes ``runs/runs/...``.
+    candidate = Path(reference).resolve()
     if candidate.is_file():
         # <run>/config/<file> or <run>/config/<N>/<file>
         holder = candidate.parent
@@ -464,6 +478,23 @@ def compose_config(
     cwd: Path | None = None,
 ) -> dict[str, Any]:
     """Compose the default root into a plain dict."""
+    return compose_with_choices(
+        spec, overrides=overrides, extra_dirs=extra_dirs, cwd=cwd
+    ).config
+
+
+def compose_with_choices(
+    spec: ComposeSpec,
+    *,
+    overrides: Sequence[str] = (),
+    extra_dirs: Sequence[Path | str] = (),
+    cwd: Path | None = None,
+) -> Composition:
+    """Compose and retain the compositor's selected group options.
+
+    Materialization consumes these choices rather than re-implementing Hydra's
+    defaults-list resolution.
+    """
     check_overrides(overrides)
     overrides = force_add_sweep_overrides(overrides)
     search = build_search_path(spec, extra_dirs, cwd=cwd)
@@ -489,13 +520,27 @@ def compose_config(
 
     try:
         with initialize_config_dir(config_dir=str(primary), version_base=None):
-            composed = compose(config_name=spec.config_name, overrides=full)
+            composed = compose(config_name=spec.config_name, overrides=full, return_hydra_config=True)
     except HydraException as exc:
         # A composition error is a message to the user about their configuration,
         # not a defect in Honbu, so it exits like one rather than as a traceback.
         raise RefusalError(f"composition failed: {exc}") from None
+    # Hydra's own tree contains deliberately unresolved sweep fields (for example
+    # ``hydra.job.num``). Read just its choices without resolving them, then drop
+    # the entire internal tree before resolving the project configuration.
+    choices_node = OmegaConf.select(
+        composed, "hydra.runtime.choices", throw_on_resolution_failure=False
+    )
+    raw_choices = OmegaConf.to_container(choices_node, resolve=False) if choices_node else {}
+    with open_dict(composed):
+        del composed["hydra"]
     container = OmegaConf.to_container(composed, resolve=True)
     if not isinstance(container, dict):
         raise RefusalError("composed configuration is not a mapping")
-    container.pop("hydra", None)
-    return container
+    return Composition(
+        config=container,
+        choices={
+            str(group): str(option)
+            for group, option in (raw_choices.items() if isinstance(raw_choices, dict) else ())
+        },
+    )

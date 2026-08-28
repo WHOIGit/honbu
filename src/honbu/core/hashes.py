@@ -277,6 +277,15 @@ class HashRegistry:
         return tuple(declaration.name for declaration in self._declarations)
 
     @property
+    def declarations(self) -> tuple[HashDeclaration, ...]:
+        """The project's declarations, for read-only operation analysis.
+
+        Operations such as configuration comparison may explain what a change can
+        affect, but must not reach into the registry's private storage.
+        """
+        return self._declarations
+
+    @property
     def fanned_names(self) -> tuple[str, ...]:
         """Names that yield many entries, so no single field can receive one."""
         return tuple(

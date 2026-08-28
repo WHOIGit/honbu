@@ -44,6 +44,7 @@ dependencies = [
 slurm = ["submitit>=1.5"]
 search = ["optuna>=3.6"]
 dev = [
+    "mkdocs-material>=9.5",
     "pytest>=8",
     "ruff>=0.5",
 ]

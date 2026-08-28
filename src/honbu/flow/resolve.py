@@ -381,6 +381,7 @@ def _phase7_leaves(
     *,
     context: TemplateContext,
     registry: TemplateRegistry,
+    replay: bool,
 ) -> None:
     """Resolve the target block's leaves. Each stays relative to its block."""
     if command.target is None:
@@ -391,7 +392,7 @@ def _phase7_leaves(
         return
 
     for name, leaf in _iter_leaves(block):
-        if leaf.dir is not None and leaf.dir_template is not None:
+        if not replay and leaf.dir is not None and leaf.dir_template is not None:
             raise RefusalError(
                 f"{block_path}.{name} sets both dir and dir_template; author one"
             )
@@ -527,7 +528,7 @@ def resolve(
         warnings.extend(target_warnings)
 
     # 7 — leaves under the target
-    _phase7_leaves(config, command, context=context, registry=registry)
+    _phase7_leaves(config, command, context=context, registry=registry, replay=replay)
 
     # 8 — revalidate. Project validators run a second time here, against a tree
     # whose identities are set and whose input paths are absolute.

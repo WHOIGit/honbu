@@ -8,6 +8,8 @@ up to the call.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from honbu import RefusalError
@@ -15,6 +17,7 @@ from honbu.errors import DeclarationError
 from honbu.flow import (
     check_overrides,
     compose_config,
+    compose_file,
     force_add_sweep_overrides,
     CommandRegistry,
     CommandSpec,
@@ -466,3 +469,11 @@ def test_a_comma_axis_inside_the_block_is_still_refused(tmp_path):
         compose_config(
             sweeping(tmp_path), overrides=["sweep.axes.epochs=10,20"], cwd=tmp_path
         )
+
+
+def test_compose_file_resolves_a_relative_provenance_path(tmp_path, monkeypatch):
+    config = tmp_path / "run" / "config"
+    config.mkdir(parents=True)
+    (config / "resolved.yaml").write_text("epochs: 10\n")
+    monkeypatch.chdir(tmp_path)
+    assert compose_file(Path("run/config/resolved.yaml"))["epochs"] == 10
