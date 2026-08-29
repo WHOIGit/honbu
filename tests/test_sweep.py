@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated
+
 import pytest
 from pydantic import Field
 
 from honbu import (
+    DIRECTIVE,
     ExperimentConfig,
     OutputBlock,
     PortablePath,
@@ -574,6 +577,54 @@ def test_an_unmarked_sweep_field_is_refused_because_it_would_fail_silently():
 
 def test_a_properly_declared_root_passes():
     check_root_declares_sweep(Root)
+
+
+def test_a_project_may_add_its_own_fields_to_the_block():
+    """The block is the one place a sweep is declared, and where a project's sweeps
+    go is a declaration of the same kind.
+
+    Read through Honbu's own type instead, a project's added field would be refused
+    as an extra input — so the block would be the single sweep definition only for
+    Honbu's half of it. Honbu still reads its three fields and nothing else.
+    """
+
+    class ProjectSweep(SweepBlock):
+        name: str = "default"
+        dir: str = "./sweeps/{experiment.name}"
+
+    class ProjectRoot(StrictModel):
+        experiment: ExperimentConfig
+        output_root: PortablePath = Path("./runs")
+        sweep: Annotated[ProjectSweep, DIRECTIVE] = Field(default_factory=ProjectSweep)
+
+    block = sweep_block_of(
+        {
+            "experiment": {"name": "reef"},
+            "sweep": {"name": "lr", "dir": "./elsewhere", "axes": {"epochs": [1, 2]}},
+        },
+        root_type=ProjectRoot,
+    )
+    assert isinstance(block, SweepBlock)
+    assert block.name == "lr"
+    assert sweep_axes(block, root_type=Root)[0].label == "epochs"
+
+
+def test_an_extended_block_is_still_strict():
+    """What is relaxed is whose schema applies, not whether one does."""
+
+    class ProjectSweep(SweepBlock):
+        name: str = "default"
+
+    class ProjectRoot(StrictModel):
+        experiment: ExperimentConfig
+        output_root: PortablePath = Path("./runs")
+        sweep: Annotated[ProjectSweep, DIRECTIVE] = Field(default_factory=ProjectSweep)
+
+    with pytest.raises(RefusalError, match="invalid 'sweep' block"):
+        sweep_block_of(
+            {"experiment": {"name": "reef"}, "sweep": {"naem": "lr", "axes": {"e": [1]}}},
+            root_type=ProjectRoot,
+        )
 
 
 def test_the_check_fires_only_when_a_sweep_block_is_actually_present():

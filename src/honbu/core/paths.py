@@ -100,6 +100,27 @@ def is_absolute_uri(uri: str) -> bool:
     return PurePosixPath(uri).is_absolute() or PureWindowsPath(uri).is_absolute()
 
 
+def is_cwd_relative(text: str) -> bool:
+    """Whether a path was authored as explicitly relative to the working directory.
+
+    This is the framework's one answer to "relative to what": a leading ``./`` or
+    ``../`` means the working directory, and a bare relative path means whatever
+    root the field's declaration names. It is what keeps a stored configuration
+    lossless — cwd-relative paths are stored absolute, so any relative value left in
+    a resolved configuration is unambiguously root-relative.
+
+    Deliberately on the *string*. ``Path("./scratch")`` is ``PosixPath("scratch")``
+    — pathlib discards the leading ``./`` — so testing a Path would silently
+    reclassify every explicitly-relative directory as root-relative.
+
+    Lives here rather than beside the resolver because it is a fact about the path
+    grammar, and anything anchoring a configured path answers to it. A second
+    implementation would be a second grammar.
+    """
+    normalized = text.replace("\\", "/")
+    return normalized.startswith("./") or normalized.startswith("../")
+
+
 def is_windows() -> bool:
     """The single place the platform is detected, so tests can flip it in one place."""
     return os.name == "nt"

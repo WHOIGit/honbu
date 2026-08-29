@@ -330,6 +330,27 @@ The field SHALL carry the directive marker, and the framework SHALL verify this
 rather than trust it, because omitting it fails silently: every run succeeds and
 only the digests are wrong.
 
+A project SHALL be able to extend the block with fields of its own, and the
+framework SHALL read the block through the type the project declared rather than
+through its own. The framework SHALL continue to read only the gate and the two
+axis containers; a project's added fields are that project's to interpret.
+
+Extension belongs here because the block is the one place a sweep is declared, and
+a project's sweep-level concerns — where its sweeps go, what to call this one — are
+declarations of the same kind. Validating the raw mapping against the framework's
+own type instead would refuse those fields as extra inputs, which makes "the block
+is the single sweep definition" true only of the framework's half of it. Reading
+through the declared type keeps strictness intact: a misspelled key is still
+refused, now against the schema that actually applies.
+
+#### Scenario: Project extends the block
+- **WHEN** a root declares a sweep field whose type adds fields to the framework's
+- **THEN** those fields survive validation and the framework reads only its own
+
+#### Scenario: Misspelled key in an extended block
+- **WHEN** a block carries a key neither the framework nor the project declares
+- **THEN** it is refused, because the project's type is strict too
+
 #### Scenario: Project without the block
 - **WHEN** a sweep block reaches a root that declares no sweep field
 - **THEN** it is refused, naming the declaration to add

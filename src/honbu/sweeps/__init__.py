@@ -20,6 +20,7 @@ from honbu.sweeps.definitions import (
     SweepBlock,
     SweepDeclaration,
     check_root_declares_sweep,
+    declared_block_type,
     sweep_block_of,
     without_sweep_block,
 )
@@ -110,6 +111,7 @@ __all__ = [
     "check_targets_are_distinct",
     "child_argv",
     "child_configuration",
+    "declared_block_type",
     "divergent_contexts",
     "execute_sweep",
     "expand",

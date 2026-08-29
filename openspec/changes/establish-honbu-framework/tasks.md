@@ -14,7 +14,12 @@
   container steps traversable on request and sequence entries addressed by index
   (D24).
 - [x] 1.5 `paths`: union sanitization for every platform, sanitization warnings,
-  absolute-reference detection in both syntaxes, platform path-length budget.
+  absolute-reference detection in both syntaxes, platform path-length budget, and
+  the cwd-relative rule — a leading `./` or `../` means the working directory, a bare
+  relative path means the root the declaration names. It began as a private helper
+  beside the resolver, which was the wrong home: it is a fact about the path grammar
+  that everything anchoring a configured path answers to, and the pilot needed it to
+  place a sweep directory by the same rule rather than inventing a second one.
 - [x] 1.6 `io`: atomic write (unique temp + rename, residue-free), text and
   artifact-JSON wrappers kept separate from the canonical encoder.
 - [x] 1.7 `templates`: pure renderer, token grammar including the invocation
@@ -97,7 +102,9 @@
   `config/` holding the immutable index, and a producing command's refusal of an
   active sweep block — which lives in flow rather than here, as a structural dict
   check, so the layer that needs to hand off does not import the layer it hands off
-  to. Every child is resolved and every gate check passes before anything is
+  to, and which the harness itself calls after composing rather than leaving to each
+  project: the guarantee is worth exactly as much as its least attentive adopter.
+  Every child is resolved and every gate check passes before anything is
   written. `runtime.sweep_id` is supplied to the resolver so a child template can
   name its sweep.
 - [x] 4.1h A sweep is extensible in place (D29): its identity comes from its
@@ -109,7 +116,16 @@
   - Deferred: the sweep resolving its own output block, peer to a run's. Preparation
     takes a sweep directory rather than deriving one, since a sweep-level output
     block needs a root schema of its own and that belongs with sweep-level reporting
-    (4.1f), not with writing children.
+    (4.1f), not with writing children. The pilot now does the project-side version of
+    this — a templated `sweep.dir` in its own extended block, refused if it reads a
+    path an axis varies — which is the shape to lift if this is ever pulled up.
+- [x] 4.1i A project may extend the sweep block, and Honbu reads it through the
+  type the project declared rather than through its own. The block was re-validated
+  against `SweepBlock`, which is strict, so a project's own layout field — where its
+  sweeps go, what to call this one — was refused as an extra input; the block was the
+  single sweep definition only for Honbu's half of it. Strictness is unchanged: a
+  subclass is strict too, so a misspelled key is still refused, against the schema
+  that actually applies.
 - [x] 4.1c Execution and status derived from the children's manifests: skip
   completed, resume every resumable state, uniform `--resolved <child> --resume`
   invocation, and stop/resume verified by test — including end to end against the
@@ -154,18 +170,18 @@
   diff, source re-hash, advisory-warn vs. artifact-refuse).
 - [ ] 4.4 Ensemble assessment (stricter gates, combine work-fn seam, objective).
 
-- [ ] 4.6 Config comparison (D26): operand references reusing the four
+- [x] 4.6 Config comparison (D26): operand references reusing the four
   configuration sources plus a run directory; N-way result distinguishing absent
   from null; the literal / authored / behavioral / by_hash levels with availability
   following from root type and registry; unavailable levels refused rather than
   downgraded; hash attribution with callable-built hashes reported opaque; a
   structured result plus one provided renderer.
-- [ ] 4.7 Config materialization (D27): closure from the compositor's recorded group
+- [x] 4.7 Config materialization (D27): closure from the compositor's recorded group
   selections with its internal groups excluded; project-declared scopes over roots
   and packaged resources; the create/skip/overwrite plan, dry run, additive default,
   explicit overwrite, and never deleting; functions plus optional command
   registration reserving no name.
-- [ ] 4.8 Local-versus-packaged drift, as an application of 4.6 over 4.7's two trees.
+- [x] 4.8 Local-versus-packaged drift, as an application of 4.6 over 4.7's two trees.
 
 ## 5. Release discipline and adoption
 

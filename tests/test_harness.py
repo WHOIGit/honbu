@@ -472,6 +472,27 @@ def test_an_unknown_option_is_a_refusal_not_a_traceback(project, capsys):
     assert "Traceback" not in err
 
 
+def test_a_producing_command_given_a_sweep_is_refused_before_anything_is_written(
+    project, capsys
+):
+    """One command, one target — and the refusal is the harness's, not each project's.
+
+    A configuration with an axis describes several runs. Running it would produce
+    exactly one, from the base values: a run directory and a manifest that look like
+    a sweep which never happened. This project declares no sweep block at all, so
+    without the check the report would be the compositor's "extra inputs are not
+    permitted", which names a rule rather than the fix.
+    """
+    record: list[str] = []
+    assert build_app(record).dispatch(["train", "sweep.axes.epochs=[10,20]"]) == 1
+
+    err = capsys.readouterr().err
+    assert "describes more than one run" in err
+    assert "Prepare the sweep instead" in err
+    assert record == []
+    assert not (project / "runs").exists()
+
+
 def test_a_defect_keeps_its_traceback(project):
     """A refusal is a message to the user; anything else is a bug, and swallowing
     it would trade a diagnosable crash for a mystery."""

@@ -169,6 +169,26 @@ def check_root_declares_sweep(root_type: type[BaseModel]) -> None:
         )
 
 
+def declared_block_type(root_type: type[BaseModel]) -> type[SweepBlock]:
+    """The block type this project declared, which may add fields to Honbu's.
+
+    The block is the one place a sweep is declared, and where a project's sweeps go
+    or what to call this one are declarations of the same kind. Validating the raw
+    mapping against :class:`SweepBlock` regardless would refuse those fields as extra
+    inputs — making "the block is the single sweep definition" true of Honbu's half
+    of it only.
+
+    Strictness is not what is being relaxed. A subclass is strict too, so a
+    misspelled key is still refused; it is refused against the schema that actually
+    applies rather than against a stricter one the project did not write.
+    """
+    info = root_type.model_fields.get(SWEEP_BLOCK)
+    declared = getattr(info, "annotation", None) if info is not None else None
+    if isinstance(declared, type) and issubclass(declared, SweepBlock):
+        return declared
+    return SweepBlock
+
+
 def sweep_block_of(
     composed: Mapping[str, Any], *, root_type: type[BaseModel] | None = None
 ) -> SweepBlock | None:
@@ -183,19 +203,22 @@ def sweep_block_of(
     A malformed block is a refusal rather than None: someone who wrote a ``sweep:``
     key meant something by it. Passing ``root_type`` additionally checks that the
     project declared the block properly, which is worth doing exactly here — at the
-    first point a sweep is actually being asked for.
+    first point a sweep is actually being asked for, and it is also what lets the
+    block be read through the project's own type rather than through Honbu's.
     """
     raw = composed.get(SWEEP_BLOCK)
     if raw is None:
         return None
+    block_type = SweepBlock
     if root_type is not None:
         check_root_declares_sweep(root_type)
+        block_type = declared_block_type(root_type)
     if not isinstance(raw, Mapping):
         raise RefusalError(
             f"the {SWEEP_BLOCK!r} block must be a mapping, not {type(raw).__name__}"
         )
     try:
-        block = SweepBlock.model_validate(dict(raw))
+        block = block_type.model_validate(dict(raw))
     except Exception as exc:
         raise RefusalError(f"invalid {SWEEP_BLOCK!r} block: {exc}") from None
     return block if block.is_active() else None

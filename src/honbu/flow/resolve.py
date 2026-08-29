@@ -49,7 +49,7 @@ from honbu.core.markers import (
     marked_field_paths,
     prune_path,
 )
-from honbu.core.paths import path_length_refusal
+from honbu.core.paths import is_cwd_relative, path_length_refusal
 from honbu.core.templates import (
     TemplateContext,
     TemplateRegistry,
@@ -109,21 +109,6 @@ class Resolution:
 # --------------------------------------------------------------------------- #
 # path helpers
 # --------------------------------------------------------------------------- #
-
-
-def _is_cwd_relative(text: str) -> bool:
-    """Whether a path was authored as explicitly relative to the working directory.
-
-    The distinction is what keeps the stored form lossless: cwd-relative paths are
-    stored absolute, so any relative value left in a resolved configuration is
-    unambiguously output-root-relative.
-
-    Deliberately on the *string*. ``Path("./scratch")`` is ``PosixPath("scratch")``
-    — pathlib discards the leading ``./`` — so testing a Path would silently
-    reclassify every explicitly-relative directory as output-root-relative.
-    """
-    normalized = text.replace("\\", "/")
-    return normalized.startswith("./") or normalized.startswith("../")
 
 
 def strip_resolved_only(
@@ -364,7 +349,7 @@ def _phase6_target(
     else:
         raise RefusalError(f"one of {spec.resolved} or {spec.template} must be set")
 
-    rendered_value = (cwd / text).resolve() if _is_cwd_relative(text) else Path(text)
+    rendered_value = (cwd / text).resolve() if is_cwd_relative(text) else Path(text)
 
     _set(config, spec.resolved, rendered_value)
     absolute = anchor(rendered_value, base=root)

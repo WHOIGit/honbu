@@ -55,6 +55,19 @@ def test_compositor_override_prefixes_route_to_overrides():
     assert len(split.overrides) == 3
 
 
+def test_a_valueless_deletion_is_an_override_not_a_positional():
+    """The one override form the contains-an-equals rule cannot see.
+
+    `~key` is how the compositor deletes, and it carries no value. Read as a
+    positional it was reported as an arity error — a message about neither what was
+    written nor what to do — which made "turn this sweep off for one run" a thing
+    the grammar allowed and the parser did not.
+    """
+    split = split_argv(["~sweep.axes", "~sweep.covariant_axes"])
+    assert split.overrides == ("~sweep.axes", "~sweep.covariant_axes")
+    assert split.positionals == ()
+
+
 def test_an_option_value_is_not_mistaken_for_a_positional():
     split = split_argv(["--config", "my.yaml", "path/to.ckpt"])
     assert split.options == {"--config": "my.yaml"}
@@ -373,6 +386,31 @@ def test_override_prefixes_are_untouched():
 def test_a_malformed_override_is_a_refusal_not_a_traceback():
     with pytest.raises(RefusalError, match="cannot parse override"):
         check_overrides(["bad==="])
+
+
+def test_setting_a_template_from_the_command_line_is_told_how_to_quote_it():
+    """Braces open a template in one grammar and a dict in the other.
+
+    It is the only systematic collision between the two grammars a caller types into
+    at once, and it makes every templated field unsettable from the command line
+    until the value is quoted so that the quotes survive the shell too. The
+    compositor says "mismatched input '{'", which describes the parse rather than
+    the remedy.
+    """
+    with pytest.raises(RefusalError) as caught:
+        check_overrides(["outputs.dir_template=./runs/{experiment.name}"])
+
+    message = str(caught.value)
+    assert "Honbu template" in message
+    assert "outputs.dir_template='\"./runs/{experiment.name}\"'" in message
+
+
+def test_an_unremarkable_parse_error_gains_no_advice():
+    """The hint is offered where it applies, not appended to everything."""
+    with pytest.raises(RefusalError) as caught:
+        check_overrides(["bad==="])
+
+    assert "Honbu template" not in str(caught.value)
 
 
 def test_a_composition_error_is_a_refusal_not_a_traceback(tmp_path):

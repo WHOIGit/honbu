@@ -128,8 +128,9 @@ def split_argv(
 ) -> ArgvSplit:
     """Route argv into overrides, options and positionals.
 
-    A token containing ``=`` and no leading dash is an override, which handles the
-    compositor's own ``+``, ``++`` and ``~`` prefixes for free — all are dash-free.
+    A dash-free token is an override if it contains ``=`` or begins with ``~``,
+    which covers the compositor's whole grammar: ``+`` and ``++`` are dash-free and
+    carry a value, and ``~`` deletes either with a value or without one.
 
     ``framework`` is the subset of framework options this caller accepts; ``reason``
     explains, per excluded option, why it does not apply, so a refusal says more than
@@ -179,7 +180,11 @@ def split_argv(
                 collected[spec.name] = value
             continue
 
-        if "=" in token:
+        # A deletion carries no value, so it is the one override form the
+        # contains-an-equals rule cannot see. Without this it lands in positionals
+        # and is reported as an arity error, which describes neither what was
+        # written nor what to do about it.
+        if "=" in token or token.startswith("~"):
             overrides.append(token)
         else:
             positionals.append(token)
@@ -373,6 +378,29 @@ def _packaged_dir(package: str) -> Path:
 SWEEP_BLOCK = "sweep"
 
 
+def _parse_refusal(token: str, exc: Exception) -> str:
+    """The compositor's grammar error, plus the fix when Honbu knows it.
+
+    Braces are the one systematic collision between the two grammars a caller types
+    into at once: they open a template in Honbu's and a dict in the compositor's. So
+    every templated field — an output directory, a sweep's location — is unsettable
+    from the command line without quotes that survive *the shell as well*, and the
+    compositor's own message says only "mismatched input '{'", which describes the
+    parse and not the remedy.
+    """
+    message = f"cannot parse override {token!r}: {exc}"
+    key, separator, value = token.partition("=")
+    if not separator or "{" not in value:
+        return message
+    return (
+        f"{message}\n"
+        f"The value contains a Honbu template, whose braces the compositor's grammar "
+        f"reads as a dict. Quote it so the quotes reach the compositor rather than "
+        f"only the shell:\n"
+        f"  {key}='\"{value}\"'"
+    )
+
+
 def check_overrides(overrides: Sequence[str]) -> None:
     """Refuse a bare top-level comma, and translate a malformed override.
 
@@ -391,7 +419,7 @@ def check_overrides(overrides: Sequence[str]) -> None:
         try:
             parsed = parser.parse_overrides([token])[0]
         except Exception as exc:  # the compositor's own grammar errors
-            raise RefusalError(f"cannot parse override {token!r}: {exc}") from None
+            raise RefusalError(_parse_refusal(token, exc)) from None
         if "SWEEP" not in str(parsed.value_type or ""):
             continue
         key = parsed.get_key_element()

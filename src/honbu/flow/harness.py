@@ -36,6 +36,7 @@ from honbu.flow.compose import (
     compose_config,
     compose_file,
     prior_config_path,
+    refuse_active_sweep_block,
 )
 from honbu.flow.resolve import Resolution, resolve, strip_resolved_only
 from honbu.core.hashes import HashRegistry, validate_identity_fields
@@ -199,6 +200,12 @@ def dispatch_command(
     composed, prior_run, replay = load_composed(
         parsed, compose_spec=compose_spec, root_type=root_type, cwd=cwd
     )
+
+    # Checked here rather than left to each project, because every command that
+    # gets this far has exactly one target and the block describes many. A prepared
+    # child never trips it: preparation consumes the block, so a child's
+    # configuration does not carry one.
+    refuse_active_sweep_block(composed, invocation=f"{spec.invocation}")
 
     if spec.target is None:
         resolution = resolve(

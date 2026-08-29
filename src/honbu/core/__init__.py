@@ -82,6 +82,7 @@ from honbu.core.markers import (
 from honbu.core.model import DEFER, Deferred, StrictModel, backend_kwargs
 from honbu.core.paths import (
     is_absolute_uri,
+    is_cwd_relative,
     normalize_separators,
     path_length_refusal,
     sanitization_warning,
@@ -172,6 +173,7 @@ __all__ = [
     "identity_field_names",
     "is_resolved_only",
     "is_absolute_uri",
+    "is_cwd_relative",
     "marked_field_paths",
     "normalize_separators",
     "output_block_fields",
