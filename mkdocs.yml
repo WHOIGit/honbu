@@ -1,0 +1,73 @@
+site_name: Honbu
+site_description: The shared foundation for configuration-driven, content-addressed training projects
+repo_url: https://github.com/sbatchelder/honbu
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  # Every code sample is quoted from `examples/linefit`, which the test suite runs
+  # end to end. A sample cannot drift from working code: a renamed API fails the
+  # suite before it can mislead a reader.
+  - pymdownx.snippets:
+      base_path: [.]
+      check_paths: true
+
+plugins:
+  - search
+  # Docstrings are Honbu's, and they carry the reasoning. Restating them in
+  # markdown would be a second source of truth for one surface, which is the drift
+  # the framework exists to remove.
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: false
+            show_root_heading: true
+            members_order: source
+            heading_level: 3
+
+nav:
+  - Home: index.md
+  - Tutorial: tutorial.md
+  - How-to:
+      - Configure a project: how-to/configure.md
+      - Register commands: how-to/commands.md
+      - Declare hashes and identities: how-to/hashes.md
+      - Record an objective: how-to/objective.md
+      - Retype paths: how-to/paths.md
+      - Sweep configurations: how-to/sweeps.md
+      - Materialize a starter tree: how-to/materialize.md
+      - Compare runs: how-to/compare.md
+      - Adopt an existing project: how-to/adopt.md
+  - Concepts:
+      - Why Honbu exists: concepts/index.md
+      - Configuration: concepts/configuration.md
+      - Identity: concepts/identity.md
+      - Runs: concepts/runs.md
+      - Refusals: concepts/refusals.md
+  - Reference:
+      - Markers: reference/markers.md
+      - Hashes: reference/hashes.md
+      - Templates: reference/templates.md
+      - Command line: reference/cli.md
+      - The manifest: reference/manifest.md
+      - API: reference/api.md
+      - Glossary: reference/glossary.md
+  - Examples:
+      - Object detection: examples/object-detection.md
+      - Image classification: examples/image-classification.md

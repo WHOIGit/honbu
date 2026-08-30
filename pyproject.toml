@@ -43,8 +43,13 @@ dependencies = [
 # execution needs neither.
 slurm = ["submitit>=1.5"]
 search = ["optuna>=3.6"]
-dev = [
+docs = [
     "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+    "pymdown-extensions>=10",
+]
+dev = [
+    "honbu[docs]",
     "pytest>=8",
     "ruff>=0.5",
 ]
@@ -58,3 +63,7 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The documentation's code samples are quoted from `examples/linefit`, and the
+# suite runs that project end to end. A sample cannot drift from working code
+# because a renamed API fails here first.
+pythonpath = ["examples"]

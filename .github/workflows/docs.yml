@@ -1,0 +1,16 @@
+name: docs
+on:
+  push:
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      # The site is installed as well as built: `mkdocstrings` imports Honbu to
+      # read its docstrings, so a broken import fails the docs build too.
+      - run: pip install -e '.[docs]'
+      - run: mkdocs build --strict

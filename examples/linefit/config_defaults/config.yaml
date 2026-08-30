@@ -1,0 +1,14 @@
+defaults:
+  - _self_
+
+experiment:
+  name: linefit
+runtime: {}
+output_root: ./runs
+outputs:
+  dir_template: "{experiment.name}/{runtime.run_id}"
+data:
+  points: ./data/points.csv
+training:
+  epochs: 500
+  learning_rate: 0.2

@@ -187,8 +187,20 @@
 
 - [ ] 5.1 Guard test: a minor framework version bumps no hash recipe version and
   does not change the canonical encoder version.
-- [ ] 5.2 Adoption guide + reference: assemble a `RootConfig`, register commands,
-  declare hashes, declare an objective, retype paths to the portable-path marker.
+- [x] 5.2 Adoption guide + reference: assemble a `RootConfig`, register commands,
+  declare hashes, declare an objective, retype paths to the portable-path marker —
+  one how-to page each, plus a tutorial that walks an empty directory to a resumable
+  run, five concept pages, seven reference pages, and an ordered adoption guide for a
+  project that already has a trainer.
+  The structural decision is that **no sample is hand-written**. The scaffold written
+  before this pass had already rotted — its central page told a reader to call
+  `Application.register`, which does not exist, from a constructor missing a required
+  argument — which is the copy-adaptation drift Honbu exists to remove, reappearing in
+  its own documentation. So `examples/linefit` is a complete working project the suite
+  runs end to end, and every sample is a snippet quoted from it: a renamed API fails
+  the tests, and a renamed snippet section fails `mkdocs build --strict` (verified by
+  breaking one). The API reference is generated from the docstrings, which already
+  carry the reasoning, rather than restated.
 - [ ] 5.3 Pilot adoption on one branch project (behind a dev branch), then the
   second, reconciling the shared modules against the framework.
 
