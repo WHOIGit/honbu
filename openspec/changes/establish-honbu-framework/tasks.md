@@ -133,9 +133,10 @@
   where an interrupted pass stopped is derivable by refreshing, so returning its own
   account of it would be the state this design exists to not have. A missing child
   is reported rather than passed over; a retired one is neither run nor counted.
-- [ ] 4.1d Optional execution adapters: local sequential needing no extra, a job
-  submitter, and a search-driven sweeper reading its objective from a child's
-  recorded best metrics rather than a work-function return value.
+- [ ] 4.1d (Deferred to separate follow-up changes) Optional execution adapters:
+  job submitter (`submitit`, `[slurm]`) and search-driven sweeper (`optuna`,
+  `[search]`) built over the `child_argv` + `best.metrics` seam; sequential local
+  execution stays in `4.1c` and `7.10`.
 - [x] 4.1e Axis well-formedness (D24): the same-paths-per-option,
   no-path-claimed-twice and at-least-two-options rules; refusal rather than a
   skipped combination for a bad path; the refusal of an override contesting a swept
@@ -164,11 +165,15 @@
   completed run; `--init` removed with `initialize_run()` retained for sweep
   preparation; framework-option applicability derived per command and enforced at
   parse time, with help generated from the same derivation.
-- [ ] 4.2 Comparison engine (operation-declared gates, N-way residual diff,
-  objective rank) sharing the sweep rollup.
-- [ ] 4.3 Version-aware reconciliation (per-hash recipe gating, resolved-tree
-  diff, source re-hash, advisory-warn vs. artifact-refuse).
-- [ ] 4.4 Ensemble assessment (stricter gates, combine work-fn seam, objective).
+- [ ] 4.2 Run comparison engine (`compare_runs`: caller-declared gates, N-way
+  config diff sharing `compare_configs`, objective ranking over `best.metrics`,
+  graceful unranked listing of incomplete runs, sweep rollup).
+- [ ] 4.3 Version-aware reconciliation (per-hash recipe & `encoder_version` gating,
+  encoder re-hash, resolved-tree diff, key-compatible stored-source comparison
+  minus `version`, defaulting to `on_unreconcilable="warn"` with opt-in `"refuse"`).
+- [ ] 4.4 Reusable run compatibility gating (`check_run_compatibility` over D7
+  reconciliation, supporting ensembling/merging/cross-run checks while projects
+  own artifact combination).
 
 - [x] 4.6 Config comparison (D26): operand references reusing the four
   configuration sources plus a run directory; N-way result distinguishing absent
@@ -211,3 +216,203 @@
   `honbu.sweeps`, `honbu.compare`, and `honbu.materialize`; split sweep
   declaration, axis interpretation, and planning into `definitions`, `axes`, and
   `plan`; preserve behavior and update tests with the new terminology.
+
+## 7. Decoupled CLI, fork lineage, and interface cleanups (supersedes 3.7)
+
+- [ ] 7.1 Core dependencies & layering guard (D20): replace unused `rich>=13`
+  with `typer>=0.12` in core dependencies; extend `test_layering` to assert
+  `honbu.core` imports no Hydra/OmegaConf/YAML/Typer, and neither `honbu.flow`
+  nor `honbu.cli` top-level imports Typer (only `honbu.cli.presets` imports
+  Typer).
+- [ ] 7.2 Opt-in `HashedRuntimeConfig` preset (D21): export
+  `HashedRuntimeConfig(RuntimeConfig)` in `honbu.core.blocks` pre-wired to
+  `FromHash("config_hash")` and `config_id = "{runtime.config_hash:coolname}"`,
+  keeping bare `RuntimeConfig` hash-free.
+- [ ] 7.3 Pure `honbu.flow` & glue fixes (D15, D17, D18, D19):
+  - Strip CLI fields (`options`, `positionals`, `applicable_options`,
+    `ParsedInvocation`, `parse_invocation`) from `CommandSpec` and `honbu.flow`.
+  - Remove `Application` and `dispatch_command` from `honbu.flow.harness`.
+  - Rename config source `"continue"` → `"fork"` and `continue_artifact` →
+    `fork_artifact` (optional default; caller-selectable artifact key recorded as
+    both `artifact_key` and `artifact` in `manifest.parent`).
+  - Expose typed `load_config(...)`, public `parent_record(...)`, and public
+    `TemplateContext.now(extras=...)` (with `resolve(..., context=None)`
+    defaulting to minting one).
+  - Move `refuse_active_sweep_block` into `resolve()`.
+  - Preserve resolution + target-preparation warnings on `Run.warnings`.
+  - Make `honbu.core.targets` collision refusals flag-agnostic by default with an
+    optional CLI hint override.
+  - Parameterize `config_hash_name` (default `"config_hash"`) in `open_run` and
+    `parent_record`.
+- [ ] 7.4 Opt-in CLI patterns (`honbu.cli` & `honbu.cli.presets`, D19):
+  - Create library-agnostic `honbu.cli`: `validate_override_tokens`,
+    `split_dash_rule`, `select_config_source`, refusal exit helper (with optional
+    structured-error hook), warning emitter, and `CONVENTIONAL_FLAGS`.
+  - Create Typer-backed `honbu.cli.presets`: `HYDRA_CONTEXT_SETTINGS`, ready-made
+    `Annotated` option aliases (`ConfigOpt`, `ResolvedOpt`, `ForkFromOpt`,
+    `ForkArtifactOpt`, `ConfigDirsOpt`, `ClobberOpt`, `ResumeOpt`), customizable
+    option factories, and optional mountable Typer command builders for
+    materialization and comparison.
+- [ ] 7.5 Peer operation alignment:
+  - Rename `OperandSource` `"continue"` → `"composed"` in `honbu.compare.configs`.
+  - Parameterize `child_argv` flag spellings in `honbu.sweeps.progress`.
+- [ ] 7.6 Update `examples/linefit`, tests, and docs:
+  - Port `examples/linefit/project.py` to Typer + `honbu.cli.presets` and
+    `HashedRuntimeConfig`, keeping all doc snippet anchors live-tested.
+  - Update `docs/how-to/commands.md` (including fixing `"create"` → `"produce"`),
+    `docs/reference/cli.md`, `docs/reference/api.md`, and `docs/how-to/adopt.md`
+    to match the Option B interface; verify `pytest` and `mkdocs build --strict`.
+- [ ] 7.7 Materialization fixes & drift upgrades (D27):
+  - Allow `ComposeSpec.local: str | None = "configs"` so packaged-only
+    composition uses `local=None` instead of a sentinel directory hack.
+  - Fix `closure_roots` to strip `@package` suffixes (`group@pkg` → `group`) and
+    support external authored files (`MaterializationRoot.from_file(...)`)
+    copying only their packaged dependencies while leaving the file in place.
+  - Make `MaterializationScope` configs-only with honest field names
+    (`roots`, `files`, `exclude`), dropping fixture `resources`, and exclude
+    Python package plumbing (`__init__.py`, `__pycache__/`, `*.pyc`, `*.pyo`)
+    by default during directory walks.
+  - Unify `plan_materialization` / `plan_config_materialization` to derive the
+    packaged root from `compose_spec` (with optional test override), and add
+    `.skipped`, `.overwritten`, and `render_plan(plan)` on `MaterializationPlan`.
+  - Fix `compare_materialized_config` so the local side shadows packaged defaults
+    (working on partial local trees) and accepts `overrides`; add file-level
+    `materialized_file_drift` + `render_file_drift` (`modified`, `unchanged`,
+    `local_only`, `packaged_only`).
+  - Add optional Typer materialization command builder in `honbu.cli.presets`,
+    update `tests/test_materialize.py` and `docs/how-to/materialize.md`.
+- [ ] 7.8 Config comparison fixes & pure-hash evaluation (D26):
+  - Validate operands through `root_type` at `authored`, `behavioral`, and
+    `by_hash` so schema defaults normalize cleanly (keeping `literal` raw).
+  - Evaluate all `reads_inputs=False` declarations (`FieldHash`, `SourceHash`,
+    `FannedHash`) at `by_hash` via `hashes.compute(..., input_reading=False)` for
+    exact per-hash digests and source diffs; reserve `opaque_hashes` for
+    `reads_inputs=True` declarations; refuse missing `command` when any
+    `FieldHash` is command-scoped.
+  - Fix `_is_excluded` wildcard segment matching and hyphenated container keys,
+    preserve empty dicts `{}` and empty lists `[]` in `_flatten`, and unify
+    `==` equality semantics across `differences` and `residual_paths`.
+  - Clean up `ConfigOperand`: drop redundant `"run"` source (keeping `default`,
+    `file`, `composed`, `resolved`), add per-operand `extra_dirs` and
+    `config_index`, and update `tests/test_compare.py` and `docs/how-to/compare.md`.
+- [ ] 7.9 Identity & hashing fixes and ergonomics (D4, D5, D18):
+  - Add `versioned: bool = True` to `SourceHash` and `FannedHash` (defaulting to
+    requiring `"version"` in built sources, allowing a versionless custom
+    `config_hash` via `versioned=False`), and allow `config_hash` to optionally
+    carry a version if a project wants one.
+  - Forbid `FromHash` targeting `reads_inputs=True` hashes in
+    `validate_identity_fields`, remove `CommandRegistry.deferred_paths` plumbing
+    (keeping Phase 6 refusal for any `reads_inputs=False` hash returning `None`),
+    and update tests that previously bound `FromHash("dataset_hash")`.
+  - Add `Run.hash(name) -> str | None` and `Run.hash_entry(name) -> HashEntry | None`
+    symmetric with `Run.artifact(name)`, returning resolved and completed deferred
+    hashes (including fanned `<name>.<key>` entries) across fresh runs and `--resume`.
+  - Export `project_fields` and add/export `project_model(model, *, include=None, exclude=())`
+    in `honbu.core` so custom `SourceHash`/`FannedHash` builders automatically
+    inherit marker-driven exclusions.
+  - Guard `deterministic_id` with a `threading.Lock()` for thread-safe RNG access.
+  - Add the missing pinned cross-project tricky-tree SHA-256 test in
+    `tests/test_core.py` (completing `1.2`'s `Pinned mechanics` scenario) and fix
+    doc drift (`docs/concepts/identity.md` `ByteHash` Deferred=`no`→`yes`;
+    `docs/reference/hashes.md` `hashes/`→`config/hashes/`).
+- [ ] 7.10 Sweeps bugs, `SweepOutputBlock`, compositor wiring, and execution ergonomics (D22–D24, D29):
+  - Fix sequence-index traversal in `assign_path` (`prepare.py`) and `_lookup`
+    (`plan.py`), unwrap `Optional`/`Annotated` in `declared_block_type`
+    (`definitions.py`) via `traversable_submodel`, and normalize `/` + `@pkg` in
+    `override_key`.
+  - Refuse empty ordinary axis lists `[]`, empty nested axis mappings, and empty
+    covariant options `{}` (keeping single-value ordinary axes allowed for CLI
+    pinning).
+  - Verify target directory stability (`r1.target == r2.target`) in
+    `check_gate_is_stable`, fix the misleading template advice in
+    `check_gate_distinguishes`, preserve deduplicated child `resolution.warnings`
+    on `Preparation.warnings`, default `prepare_sweep(..., context=None)` to
+    `TemplateContext.now()`, remove the stale pre-D29 docstring in `prepare.py`,
+    and update `docs/how-to/sweeps.md` away from `APP.dispatch`.
+  - Implement cross-field `@model_validator` combination skipping (`value_error`
+    recorded in `Preparation.skipped` and `config/index.json["skipped"]` with a
+    warning, refusing if zero valid children remain, while still refusing
+    field-level type/literal/constraint typos).
+  - Add opt-in `SweepOutputBlock(OutputBlock)` preset and `sweep_target` support
+    on `prepare_sweep` (refusing `dir_template` referencing any swept axis path,
+    persisting `config/composed.yaml`, `config/resolved.yaml`, and
+    `config/index.json`), while keeping explicit `sweep_dir` override (persisting
+    `config/composed.yaml` and `config/index.json`).
+  - Accept `compose_spec` and `extra_dirs` directly on `plan_sweep` and
+    `prepare_sweep` (and export `sweep_composers(...)`), automatically forwarding
+    non-sweep overrides and `extra_dirs`, translating nested group paths
+    (`a.b` → `a/b` and `~a/b`), and running `check_no_group_is_shadowed`, while
+    keeping explicit `compose_child`/`compose_without` callbacks as escape hatches.
+  - Upgrade `execute_sweep` with `on_error: Literal["stop", "continue"] = "stop"`
+    (`ExecutionResult.failed`, always propagating `KeyboardInterrupt`/`SystemExit`),
+    validated `only=` accepting child indices or gate values, and separate
+    `SweepStatus.missing` (active) from `SweepStatus.retired_missing`.
+- [ ] 7.11 Run lifecycle fixes & manifest hardening (D12, D14, D15):
+  - Fix Phase 7 (`_phase7_leaves` in `resolve.py`): check `_authored` for leaf
+    `dir`/`dir_template` (matching Phase 6), re-render templated leaves in
+    `command.scope` on augmenting `--resolved` replays unless `leaf.dir` was
+    explicitly overridden, collect `rendered.warnings`, pass `path_fields`, handle
+    `is_cwd_relative`, and enforce `path_length_refusal` on anchored leaf dirs.
+  - Refuse mutually exclusive `clobber=True, resume=True` and refuse `resume=True`
+    on augmenting commands in `open_run` / `_prepare`.
+  - Update `Run.skip()` to snapshot `manifest.satisfied_steps()` (`completed` and
+    `not_applicable`) rather than only `completed_steps()`.
+  - Harden `Manifest`: record `kind`/`message` on `"error"`/`"interrupted"`
+    timeline events and clear top-level `failure` on `"resumed"`/`"finished"`/
+    `"incomplete"`; derive `state` from the last reserved timeline event on
+    `Manifest.load(..., derive_state=True)` with `derive_state=False` opt-out;
+    update `record_progress(fields=None, /, **kwargs)` to merge incrementally and
+    add `set_progress(fields=None, /, **kwargs)` for full replacement; add
+    `artifact_key` to `record_parent`.
+  - Protect producing run hashes: augmenting invocations with `config_index > 1`
+    write their hashes in `config/<N>/hashes/` and `invocations[i]["config_hash"]`
+    and only add newly introduced hash names to top-level `manifest["hashes"]`.
+  - Harden `--resume`: preserve recorded `identities["run_id"]` when not
+    overridden (preventing spurious `config/2/`), and refuse behavioral
+    `config_hash` drift by default (`allow_config_drift=False`), directing callers
+    to `--fork-from` or `--clobber`.
+  - Fix edge cases: wrap `format(value, tail)` `ValueError` in `templates.py` into
+    `TemplateError` and support sequence indices in `_lookup`; skip disabled
+    `OutputLeaf` (`enabled=False`) in `_scope_dirs`; handle `resolved.is_file()`
+    in `targets.prepare_scope` (matching `prepare_target`).
+- [ ] 7.12 Strict schema & path portability fixes (D2, D9, D10, D18):
+  - Mark `OutputBlock.dir_template` and `OutputLeaf.dir_template` with `DIRECTIVE`
+    so neither `dir` nor `dir_template` enters behavioral digests or `behavioral`
+    comparison (keeping `OutputBlock.dir` as authorable `PortablePath | None`).
+  - Wire `is_absolute_uri` into `_phase2_input_paths`, `anchor`, and
+    `Run.artifact` so Windows drive paths read on POSIX stay absolute; extend
+    `_phase2_input_paths` to walk `WILDCARD` container paths (`dict[str, Block]`,
+    `list[Block]`, `list[PortablePath]`, `dict[str, PortablePath]`).
+  - Verify `output_root` carries `PathMarker` in `validate_root_contract`.
+  - Update `backend_kwargs(block, *, mode: Literal["python", "json"] = "python",
+    recursive: bool = False)` to preserve native Python types by default while
+    supporting `mode="json"` and optional recursive `DEFER` omission.
+  - Enforce refusal of non-null authored `RESOLVED_ONLY` fields in `resolve()`
+    when `replay=False`; add explicit `sweep_id: str | None = None` to `resolve()`
+    (used by `prepare_sweep` instead of mutating `composed`), and update test
+    fixtures that typed authorable `dir` as `ResolvedPath`.
+  - Fix doc & export drift: correct `IDENTITY` description in
+    `docs/reference/markers.md`, export `CONFIG_HASH_NAME` from `honbu.core`, and
+    refresh the stale docstring in `honbu/__init__.py`.
+- [ ] 7.13 Passive `ProjectSpec`, curated top-level exports, & adoption pattern note (D1, D19):
+  - Add passive frozen `ProjectSpec(root_type, compose_spec, hashes=...,
+    templates=..., config_hash_name=...)` in `honbu.flow` (running
+    `validate_root_contract` and `validate_identity_fields` on construction, with
+    zero CLI or IoC coupling), accepted as an optional convenience across
+    `load_config`, `resolve`, `open_run`, `compare_configs`, `prepare_sweep`,
+    `plan_materialization`, and `honbu.cli.presets` alongside individual kwargs.
+  - Curate top-level `honbu/__init__.py` to the ~25 everyday project-authoring
+    symbols (`StrictModel`, `ExperimentConfig`, `RuntimeConfig`,
+    `HashedRuntimeConfig`, `OutputBlock`, `OutputLeaf`, `PortablePath`,
+    `ResolvedString`, `ResolvedPath`, `TemplatedString`, `TemplatedIdentity`,
+    `DERIVED`, `DIRECTIVE`, `IDENTITY`, `PORTABLE_PATH`, `RESOLVED_ONLY`,
+    `TEMPLATED`, `FromHash`, `DEFER`, `Deferred`, `backend_kwargs`, `FieldHash`,
+    `SourceHash`, `ByteHash`, `FannedHash`, `HashRegistry`, `HashEntry`,
+    `project_fields`, `project_model`, `validate_root_contract`,
+    `validate_identity_fields`, `unmarked_path_fields`, and `HonbuError`
+    subclasses), keeping lower-level walker/target/IO/template internals in
+    `honbu.core.*` (updating internal tests/docs imports cleanly).
+  - Document the derived-domain-field pattern (`RESOLVED_ONLY` without `DERIVED`
+    populated by `@model_validator(mode="after")`, e.g. `dojo`'s
+    `transforms.inference_pipeline`) in `docs/how-to/adopt.md` during the docs
+    pass (`7.6` / post-pilot docs).

@@ -55,12 +55,31 @@ major framework version that bumps every hash recipe version.
 
 ### Requirement: Bare-namespace versioned sources
 Hash sources SHALL project in the configuration's own key namespace with no
-synthetic wrapper and SHALL carry a `version` field; the configuration-identity
-source SHALL carry no version token.
+synthetic wrapper and domain sources SHALL carry a `version` field by default.
+The configuration-identity source MAY omit a version token (or carry one if a
+project opts in), and `SourceHash` and `FannedHash` SHALL accept
+`versioned: bool = True` so a versionless custom source opts out cleanly.
 
 #### Scenario: No wrapper
 - **WHEN** a configuration-identity source is produced
 - **THEN** its top-level keys are configuration field names
+
+#### Scenario: Versionless custom source opts out explicitly
+- **WHEN** a `SourceHash` is declared with `versioned=False` and returns a source
+  without a `version` key
+- **THEN** hashing succeeds with `entry.version = None`, whereas `versioned=True`
+  refuses a source omitting `version`
+
+### Requirement: Marker-aware projection helpers
+The core package SHALL export `project_fields` and `project_model` so custom
+`SourceHash` and `FannedHash` builders can project a root configuration or
+submodel while automatically applying all marker-driven exclusions rather than
+maintaining hand-written exclusion lists.
+
+#### Scenario: Submodel projection excludes marked fields
+- **WHEN** a custom `SourceHash` calls `project_model` on a configuration submodel
+  containing portable-path or derived fields
+- **THEN** those marked fields are pruned from the returned mapping automatically
 
 ### Requirement: Type-driven field exclusion
 Marked fields SHALL be excluded from behavioral sources by walking their type
@@ -92,10 +111,11 @@ the field does stay in the persisted configuration where it is useful provenance
 - **THEN** it is excluded from every element rather than silently retained
 
 ### Requirement: Declared hashes
-A project SHALL declare each hash in one of three forms: selected configuration
-fields, a project-built source that carries its own recipe version, or a digest
-over file bytes. Declared field paths SHALL be validated against the schema when
-the registry is constructed.
+A project SHALL declare each hash in one of four forms: selected configuration
+fields (`FieldHash`), a project-built source (`SourceHash`, versioned by default
+via `versioned=True`), a digest over file bytes (`ByteHash`), or a fanned-out
+declaration (`FannedHash`). Declared field paths SHALL be validated against the
+schema when the registry is constructed.
 
 #### Scenario: Unknown declared path
 - **WHEN** a declaration references a configuration path that does not exist
@@ -103,10 +123,10 @@ the registry is constructed.
 
 ### Requirement: Deferral is declared, not discovered
 A declaration SHALL state whether computing it reads the filesystem or the
-network. Every such hash SHALL be deferred past resolution regardless of whether
-its inputs happen to be present, so the deferred set is derivable from the
-declarations alone and is identical on every machine. Deferred hashes SHALL be
-completed during work, once, as their inputs materialize.
+network (`reads_inputs=True`). Every such hash SHALL defer past resolution
+regardless of input presence, SHALL NOT bind a `FromHash` configuration field,
+and SHALL be completed during work via `run.complete_hash()` and read via
+`run.hash()` or `run.hash_entry()`.
 
 #### Scenario: Inputs present but the hash still defers
 - **WHEN** an input-reading hash is resolved on a machine where its inputs exist
@@ -117,9 +137,14 @@ completed during work, once, as their inputs materialize.
 - **WHEN** a configuration is inspected on two machines with different data present
 - **THEN** both report the same resolved identities and the same deferred set
 
-#### Scenario: Completion during work
+#### Scenario: Deferred hash cannot bind a FromHash field
+- **WHEN** a schema field declares `FromHash` naming a `reads_inputs=True` hash
+- **THEN** validation fails at construction naming the field and the deferred hash
+
+#### Scenario: Completion during work and reading across resume
 - **WHEN** a deferred hash is completed with its inputs during work
-- **THEN** its artifact is written and the run manifest records its value
+- **THEN** its artifact is written, the manifest records its value, and
+  `run.hash(name)` returns that digest on both the current run and a resumed run
 
 ### Requirement: Fanned-out hash declarations
 A declaration that fans out SHALL yield one entry per key of a mapping or per
@@ -166,11 +191,17 @@ unverifiable.
 
 ### Requirement: Deterministic and fresh identities
 The framework SHALL derive deterministic human-readable identities from a hash,
-domain-seeded, and SHALL provide fresh per-invocation identities.
+domain-seeded, and SHALL provide fresh per-invocation identities. Deterministic
+identity generation SHALL be thread-safe, guarding any shared generator RNG state.
 
 #### Scenario: Repeat
 - **WHEN** the same hash is labelled twice
 - **THEN** the deterministic identity is identical, and a fresh identity differs
+
+#### Scenario: Concurrent deterministic labelling
+- **WHEN** multiple threads call `deterministic_id` concurrently
+- **THEN** every call returns the exact deterministic identity for its inputs
+  without cross-thread RNG corruption
 
 ### Requirement: Unknown hashes are ignored
 A consumer reading a run's hash artifacts SHALL ignore hash names it does not

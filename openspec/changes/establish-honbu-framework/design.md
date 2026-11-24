@@ -26,7 +26,7 @@ design's single load-bearing assumption; everything below assumes it.
 - Keep branch projects in control — they call the framework; the framework does
   not invert control — so a project adopts the depth it wants and hand-rolls the
   rest without a fight.
-- Make cross-cutting capabilities (sweeps, comparison, ensemble assessment)
+- Make cross-cutting capabilities (sweeps, comparison, compatibility gating)
   something you build once and both projects consume.
 - Domain divergence lives entirely in project-declared parts; a new capability
   costs a declaration, not a fork.
@@ -46,12 +46,14 @@ Two dependency layers and three direct operation areas are opt-in by *import* �
 see D20, which flattened the install:
 
 ```
+  honbu.cli          opt-in CLI patterns (dash-rule, source selection, refusal exit)
+                     · honbu.cli.presets (opt-in Typer option & command presets)
   honbu.sweeps       declaration · planning · preparation · execution adapters
-  honbu.compare      run/config comparison · reconciliation · ensemble assessment
+  honbu.compare      run/config comparison · reconciliation · compatibility gating
   honbu.materialize  config-tree materialization · local/package drift
              ↑
-  honbu.flow         compose→resolve→collide→persist→work→complete ·
-                     CLI dash-grammar · provenance bundle · run manifest
+  honbu.flow         pure-Python compose→load→resolve→collide→persist→work→complete ·
+                     lifecycle-only CommandSpec · provenance bundle · run manifest
              ↑
   honbu.core         canonical JSON · hash_source · IDs · strict-model base ·
                      markers + walkers · atomic writes · template rendering ·
@@ -65,7 +67,7 @@ that part," not "fight the frame." **Placement rule:** if duplicating a mechanis
 caused drift, it is core and non-negotiable (canonical JSON, the `version`
 convention, marker exclusion).
 
-`core` and `flow` state the dependency direction. `sweeps`, `compare`, and
+`core` and `flow` state the dependency direction. `cli`, `sweeps`, `compare`, and
 `materialize` are peer public areas rather than a catch-all layer: each can build
 on core/flow, but lower layers never import them. The names are intentionally
 breaking — no compatibility modules preserve `honbu.mechanics` or
@@ -95,7 +97,11 @@ project's results semantics onto the other for no benefit.
   validate_root_contract(RootConfig)
 ```
 
-The guard checks *presence and base type only*. See D3 for why it stops there.
+The guard checks *presence, base type, and `PathMarker` on `output_root` only*.
+`OutputBlock.dir_template` and `OutputLeaf.dir_template` carry `DIRECTIVE` so
+neither `dir` nor `dir_template` enters behavioral digests or `behavioral`
+comparison (while `dir` stays authorable `PortablePath | None`, not
+`RESOLVED_ONLY`). See D3 for why the guard stops there.
 
 Rationale: this is the only option that (a) keeps the flat top-level namespace
 the identity mechanics and Hydra groups depend on, (b) prevents drift by sharing
@@ -137,13 +143,20 @@ guardrails, is the deliberate trade.
 ### D4 — Identity mechanics are the non-negotiable core
 
 Sources project in the config's own flat key namespace (field names, no synthetic
-wrapper), serialize through one shared canonical-JSON path, and carry a `version`
-field; the configuration identity carries no version token (its identity is its
-content). Portable-path and generated/derived-identity fields are excluded by
-walking type markers — through mapping values and sequence elements as well as
-direct submodels — never a hand-maintained list. Deterministic human IDs derive
-from a hash, domain-seeded. This is L1: identical in both projects by
-construction, so the class of drift that motivated Honbu cannot recur.
+wrapper), serialize through one shared canonical-JSON path, and domain recipes
+carry a `version` field by default. The configuration identity conventionally
+omits a version token (its identity is its content), though a project may opt in
+to versioning it; `SourceHash` and `FannedHash` expose `versioned: bool = True`
+so a versionless custom source (such as a custom `config_hash` substituting
+checkpoint identity) opts out cleanly while domain recipes remain version-checked
+by default. Portable-path, derived, templated, and directive fields are excluded
+by walking type markers — through mapping values and sequence elements as well as
+direct submodels — never a hand-maintained list; `honbu.core` exports
+`project_fields` and `project_model` so custom `SourceHash`/`FannedHash` builders
+inherit marker exclusions automatically. Deterministic human IDs derive from a
+hash, domain-seeded and thread-safe (guarding shared generator RNG state). This
+is L1: identical in both projects by construction, so the class of drift that
+motivated Honbu cannot recur.
 
 The encoder is deliberately narrow. Sorted keys and compact separators make
 authored order irrelevant; floats normalize to twelve significant digits and
@@ -157,13 +170,14 @@ bugs, at the cost of an encoding no human and no other tool can read.
 
 ### D5 — Hashes are declared; gating authority belongs to the operation
 
-Each hash is a *declaration* in one of three forms: selected configuration fields
-(the drift-prone case, so it is declarative data — an include set, optionally
-per-command, plus per-hash excludes), a project-built source that carries its own
-recipe version (computed values, versioned constants, data-derived listings), or a
-digest over file bytes. Field selection alone covers `config_hash` and almost
-nothing else — every domain hash in both projects synthesizes or normalizes
-something — so the callable form is not an escape hatch, it is the common case.
+Each hash is a *declaration* in one of four forms: selected configuration fields
+(`FieldHash` — the drift-prone case, so it is declarative data: an include set,
+optionally per-command, plus per-hash excludes), a project-built source
+(`SourceHash`, carrying its own recipe version by default via `versioned=True`),
+a digest over file bytes (`ByteHash`), or a fanned-out declaration (`FannedHash`).
+Field selection alone covers `config_hash` and almost nothing else — every domain
+hash in both projects synthesizes or normalizes something — so the callable form
+is not an escape hatch, it is the common case.
 
 What a hash does **not** carry is which operations it gates. An earlier draft put
 `{role, gates}` on each hash and had the engine walk a run's recorded hash block.
@@ -174,55 +188,67 @@ live registry, and a consumer ignores hash names it does not recognize. The
 framework still needs no domain knowledge; it just asks the operation instead of
 the artifact.
 
-A hash whose external inputs are absent is **deferred**, not missing and not an
-error — which is what makes an optional byte-reading identity (scan the
-materialized dataset) a normal absence rather than a degraded run, and what lets
-read-only inspection resolve everything else.
+A hash declared as input-reading (`reads_inputs=True`) is always **deferred** past
+resolution — whether or not its inputs happen to be present — which is what makes
+an optional byte-reading identity (scan the materialized dataset) a normal absence
+rather than a degraded run, and what lets read-only inspection resolve everything
+else. Because deferred hashes are run-time facts rather than static config fields,
+they cannot bind a `FromHash` field; they are completed via `run.complete_hash()`
+and read via `run.hash()` or `run.hash_entry()` (D18).
 
 ### D6 — One engine for sweeps and comparison; a clean work-fn seam
 
-A sweep declares a base config, axes (config path + values), a strategy, an
-output template, and an objective (a metric key + direction). The framework
-expands the axes, composes/resolves each child, assigns child identities, writes a
-sweep index, and — as children complete — collects canonical metrics and groups by
-configuration identity, without knowing what the work function trains.
+A sweep declares a gate, ordinary/group axes, and optional covariant axes in the
+sweep block (D22–D24); preparation expands the matrix, resolves every child (with
+optional `SweepOutputBlock` resolution or an explicit `sweep_dir`), checks the
+gate and target-template stability, skips cross-field model-validator rejections,
+and writes each valid child in `initialized` state without running work, while
+local sequential execution is a stateless resumable loop over the accumulating
+sweep index (with external `submitit`/`optuna` adapters deferred to follow-up
+changes).
 
-Amended by D22 and D23: expansion and execution are two commands, not one call.
-Preparation resolves and materializes every child but runs nothing; execution is a
-resumable loop over the index. So the framework does not "run each through the
-lifecycle" in one pass — a sweep that could only be run to completion in a single
-process is the thing D23 exists to avoid. N-way config comparison and a
-sweep's per-axis rollup are the *same* operation, so sweeps and comparison are one
-engine with two entry points (axes known vs. discovered). Ensemble assessment is
-the same shape: a stricter gate set, a project-supplied combine work function, and
-the same objective. The domain surface of all three is a work function plus two
-declarations (objective, hash roles) — never a fork.
+N-way configuration comparison (`compare_configs`) and run comparison
+(`compare_runs`, including a sweep's per-axis rollup) share one engine: caller-
+declared gate hashes, N-way configuration diffing, and objective ranking over each
+run's recorded `best.metrics` (listing incomplete or unranked runs gracefully with
+their state rather than aborting the report).
+
+An earlier draft also specified a framework-owned `ensemble_assess` wrapper taking
+a project `combine` work function. That is replaced by a more general primitive:
+**`check_run_compatibility(runs, gates=..., on_unreconcilable=...)`**. Combining
+predictions (averaging softmax logits vs. Weighted Box Fusion over tiled boxes) is
+100% domain code; Honbu's reusable contribution is verifying gate agreement and
+version reconciliation, which serves ensembling, model merging, distillation, and
+cross-run validation equally without baking an ensemble concept into the framework.
 
 ### D7 — Version-aware reconciliation for cross-version comparison
 
-Comparison gates on **per-hash recipe version**, never the framework version (a
-framework change that leaves a hash's recipe untouched leaves those runs fully
-comparable). When a relevant hash's recipe version differs between two runs:
+Comparison gates on **per-hash recipe version** (and `encoder_version`), never the
+framework version (a framework change that leaves a hash's recipe untouched leaves
+those runs fully comparable). When a relevant hash's recipe version or encoder
+version differs between runs:
 
 ```
-  vX == vY                         → compare recorded digests
-  byte-identity hash (no recipe)   → always comparable
-  config identity                  → diff the stored resolved configuration trees
-                                     directly (version-proof; the resolved config
-                                     is the whole structure)
-  domain identity, sources stored, → re-hash the stored source objects under one
-    compatible shape                 chosen recipe and compare
-  shape incompatible / sources gone → advisory op (compare): warn and proceed
-                                       artifact-producing op (ensemble): refuse
+  vX == vY and same encoder        → compare recorded digests directly
+  byte-identity hash (no source)   → always comparable (raw file SHA-256)
+  encoder_version bump only        → re-hash stored source objects under current encoder
+  config identity (FieldHash)      → diff stored config/resolved.yaml trees directly
+  domain identity, stored sources  → strip "version" and compare stored source dicts
+    have compatible key shapes       directly (same keys and canonical values)
+  incompatible source shapes or    → err toward warning by default (warn and proceed);
+    missing sources                  callers producing fused artifacts opt in to refuse
 ```
 
-Two reconciliation substrates: the resolved configuration (owns configuration
-identity and yields a free structural diff — always available) and the stored
-source objects (own the domain identities, whose inputs are not in the config).
-This retroactively justifies storing sources alongside digests: it is what makes
-graceful cross-version comparison possible. Release rule: a minor framework
-version MUST NOT bump any hash recipe version — an enforceable guard test — so
-"compatible minor-to-minor" is a precise, testable promise.
+Note the honest boundary on domain identities: a stored `SourceHash` artifact holds
+the *output* of the old recipe, not the raw input config or dataset. Stored
+sources therefore cleanly reconcile encoder bumps and key-compatible recipe
+revisions, while newly added or renamed source keys cannot be fabricated from an
+older artifact and surface as unreconcilable. Erring toward warning by default
+keeps historical comparison usable, while `on_unreconcilable="refuse"` gives
+artifact-producing workflows (such as ensembling) strict protection when requested.
+Release rule: a minor framework version MUST NOT bump any hash recipe version — an
+enforceable guard test — so "compatible minor-to-minor" is a precise, testable
+promise.
 
 ### D8 — One artifact per hash; the encoder is versioned outside every digest
 
@@ -281,11 +307,15 @@ platform-aware while digests stay platform-independent.
 ### D10 — Absence carries no meaning
 
 `None` means null. "Apply the backend library's own default" is spelled with an
-explicit deferral token that survives serialization and appears in behavioral
-sources, so a run that deferred and a run that pinned the same value are visibly
-different runs with different digests. The alternative — absence as meaning — was
-already in use and already cost a project a knob it could no longer turn off,
-because the sentinel consumed the only spare value.
+explicit deferral token (`DEFER`) that survives serialization and appears in
+behavioral sources, so a run that deferred and a run that pinned the same value
+are visibly different runs with different digests. `backend_kwargs(block, *,
+mode="python", recursive=False)` omits `DEFER` entries while defaulting to
+`mode="python"` (preserving native tuples/`Path` when forwarding directly to
+Python backend libraries, with `mode="json"` available if a JSON-native dict is
+needed). The alternative — absence as meaning — was already in use and already
+cost a project a knob it could no longer turn off, because the sentinel consumed
+the only spare value.
 
 This also settles a subtler question: Pydantic's set-fields tracking cannot be
 used to recover what a user authored, because resolution assigns fields and
@@ -350,8 +380,12 @@ resolved directory from the existing manifest, appends to that manifest, and
 Leaf-level templating completes the picture: an override that changes a named hash
 can flow into a leaf template (`results/{inference_hash:coolname}`), so evaluating
 against a different dataset writes a new leaf rather than colliding with the old
-one. Both result sets coexist in one run directory, each with its own recorded
-identity.
+one. Under an augmenting `--resolved` replay, Phase 7 re-renders templated leaves
+in the command's declared `scope` unless the caller explicitly pinned a literal
+`leaf.dir` override (while checking authored leaf fields, collecting warnings,
+enforcing path-length limits, and skipping disabled `OutputLeaf` entries during
+scope preparation). Both result sets coexist in one run directory, each with its
+own recorded identity.
 
 `--force` is dropped. Its value depended entirely on the run-directory template:
 with the timestamped defaults both projects use it never fires, and with a
@@ -417,12 +451,18 @@ the comparison substrate, and artifacts are registered as they appear rather tha
 at the end (an interruption at epoch 40 must still name `checkpoints/last.pt`).
 
 Five states — `initialized`, `running`, `completed`, `interrupted`, `failed` —
-where `interrupted` and `failed` are discriminated by *who stopped it*, an external
-signal versus an internal exception. Resumability is not the discriminator: an OOM
-crash is often resumable too. `state` is a materialized view, always derived from
-the last reserved timeline event and never written independently, so it cannot
-drift; the timeline itself is an open append-only log the project can add domain
-events to.
+plus `partial` (D25), where `interrupted` and `failed` are discriminated by *who
+stopped it*, an external signal versus an internal exception. Resumability is not
+the discriminator: an OOM crash is often resumable too. `state` is a materialized
+view, always derived from the last reserved timeline event and never written
+independently — including on `Manifest.load(..., derive_state=True)` (a backward
+scan with an explicit `derive_state=False` opt-out) so it cannot drift; the
+timeline itself is an open append-only log the project can add domain events to.
+Failure `kind` and `message` are recorded on the failure timeline event as well as
+top-level `failure`, and top-level `failure` clears on resume or completion so a
+resumed run does not carry a stale crash. `record_progress` merges keys
+incrementally (accepting a mapping or kwargs) while `set_progress` replaces the
+progress mapping wholesale.
 
 A run directory accumulates invocations — augmenting commands are invocations —
 so the manifest carries an `invocations` array and timeline events index into it.
@@ -431,46 +471,73 @@ Each invocation references a config index, deduplicated on the canonical bytes o
 the resolved configuration rather than on `config_hash`, so two invocations
 differing only in a hash-excluded field stay distinguishable. Configs persist at
 `config/` for the first and `config/<N>/` thereafter, keeping the obvious path
-obvious.
+obvious. Top-level `manifest["hashes"]` preserves the producing run's digests: an
+augmenting invocation with `config_index > 1` writes its own hashes under
+`config/<N>/hashes/` and `invocations[i]["config_hash"]`, only adding newly
+introduced hash names to top-level `manifest["hashes"]` without overwriting the
+producing run's hashes.
 
-### D15 — Extending a completed run produces a new run with recorded lineage
+### D15 — Forking a completed run produces a new run with recorded lineage
 
-Continuing training from a finished run — same trajectory, more epochs — is
-tempting to model in place. It is refused. A directory whose artifacts came from
-one configuration for 100 epochs and another for 50 more has no honest
-`config_hash`, and the truthful answer to "what produced this checkpoint" is a
-sequence, which a single manifest cannot express. Both projects already spell
-warm-starting as a first-class config concept (`weights.source = "checkpoint"`),
-so the capability is not lost, only relocated.
+Extending training from a finished run — same trajectory, more epochs, or branching
+off a checkpoint — is tempting to model in place. It is refused. A directory whose
+artifacts came from one configuration for 100 epochs and another for 50 more has no
+honest `config_hash`, and the truthful answer to "what produced this checkpoint" is
+a sequence, which a single manifest cannot express. For the same reason, resuming
+an unfinished run (`resume=True`) refuses behavioral `config_hash` drift by
+default (`allow_config_drift=False`), directing the caller to fork or clobber
+instead, preserves the run's recorded `run_id` when not overridden (avoiding
+spurious `config/2/` allocation on default-config resume), and treats `clobber`
+and `resume` as mutually exclusive. Both projects already spell warm-starting as a
+first-class config concept (`weights.source = "checkpoint"`), so the capability is
+not lost, only relocated.
 
-`--continue-from <run_dir>` therefore reads that run's **composed** configuration
-as the base, applies overrides, resolves a **new** directory, and records
-`parent: {run_dir, config_hash, artifact}`.
+**Forking** (`source="fork"`, conventional flag `--fork-from <run_dir>`) therefore
+reads that run's **composed** configuration as the base, applies overrides, resolves
+a **new** directory, and records `parent: {run_dir, config_hash, artifact_key, artifact}`.
+
+*Why "fork" instead of "continue".* An earlier draft spelled this `--continue-from`.
+In practice, `--resume` is already described as continuing an unfinished run in
+place, so `--continue-from` collided directly with `--resume` while doing the
+opposite (creating a new directory). `fork` makes creating an independent child
+run unmistakable.
+
+*Why `parent.artifact` stays required — and caller-selectable.* If a caller only
+wants to reuse a prior run's authored config from scratch, they can already compose
+`<run>/config/composed.yaml` directly without claiming lineage. Keeping
+`parent.artifact` required ensures `manifest.parent` unambiguously means
+artifact/state lineage rather than config copying. Because runs commonly register
+multiple checkpoints (e.g. `best_checkpoint` and `last_checkpoint`), the artifact
+key is **selectable at call time** via `parent_record(run_dir, artifact=...)`,
+falling back to an optional default `CommandSpec.fork_artifact`, and recording both
+`artifact_key` and its path. Because the project owns its CLI flow (D19), it can
+also read `parent["artifact"]` before `resolve()` to wire the checkpoint path into
+its config automatically.
 
 The composed form rather than the resolved one, because resolution absolutizes
 input paths: a resolved `./datasets/coco8` is stored as
 `/home/you/datasets/coco8`, which is correct on the machine that produced it and
-absent on the cluster node you meant to continue in. The authored form
-re-absolutizes wherever it runs. The accepted cost is that it holds only what was
-authored, so a schema default that moved since the parent ran is silently picked
-up; the parent's recorded `config_hash` makes that detectable if a project cares
-to check. Resolved-only fields are stripped as well, but that is now a safety net
-for a project that authors into one rather than the mechanism.
+absent on the cluster node you meant to fork on. The authored form re-absolutizes
+wherever it runs. The accepted cost is that it holds only what was authored, so a
+schema default that moved since the parent ran is silently picked up; the parent's
+recorded `config_hash` makes that detectable if a project cares to check.
+Resolved-only fields are stripped as well, as a safety net for a project that
+authors into one.
 
-This is the sharp line between the two sources. A replay keeps everything, so the
-parent's literal output directory wins and the invocation lands in that same run.
-A continuation must not inherit that directory, or two configurations' artifacts
-end up in one place with an honest identity for neither.
+This is the sharp line between the two sources. A replay (`resolved`) keeps
+everything, so the parent's literal output directory wins and the invocation lands
+in that same run. A fork must not inherit that directory, or two configurations'
+artifacts end up in one place with an honest identity for neither.
 
 Copying the parent's other files — metrics, results, the manifest — is deliberately
 not done. It would make the child's records describe someone else's run: copied
 metrics would span two configurations under one `config_hash`, and a copied
 manifest would hand the child the parent's identities and timeline outright. The
 lineage pointer already reaches the parent's files in place, and only the project
-knows which of them are continuable state rather than a record of a different run. Whether the child restores full
-training state or only loads weights is the project's business and shows up in the
-child's own configuration; Honbu records the link and nothing about its semantics.
-Lineage is wanted by L3 regardless.
+knows which of them are continuable state rather than a record of a different run.
+Whether the child restores full training state or only loads weights is the
+project's business and shows up in the child's own configuration; Honbu records the
+link and nothing about its semantics. Lineage is wanted by comparison regardless.
 
 ### D16 — The resolved configuration is portable; the runtime view is absolute
 
@@ -522,12 +589,13 @@ the same kind of token, and the model is a *default root plus overrides* rather
 than a family of selectors.
 
 That leaves four config sources, mutually exclusive, with overrides allowed on top
-of any of them: the default config name, an authored file, a prior run's resolved
-configuration (a file or a run directory), and a parent run to continue from. A
-command **declares which of them it accepts**, which is what lets an augmenting
-command refuse a freshly composed root with a message that names the fix instead
-of failing later at collision time, and lets a command that needs no configuration
-at all declare none.
+of any of them: the default config name (`default`), an authored file (`file`), a
+prior run's resolved configuration (`resolved`, given as a file or run directory),
+and a parent run to fork from (`fork`). A command **declares which of them it
+accepts**, which lets an augmenting command refuse a freshly composed root with a
+message naming the fix instead of failing later at collision time, and lets a
+command needing no configuration declare none. `honbu.flow` exposes a typed
+`load_config(...)` loader for these sources with no CLI coupling.
 
 Replaying a resolved configuration would otherwise trip the both-set refusal on
 `dir` and `dir_template`, since a resolved artifact carries both. It does not,
@@ -536,14 +604,8 @@ wins and the check is skipped. This is also why a replay lands in the original
 directory while a composed configuration produces a fresh run — the literal `dir`
 pins it, reusing a feature rather than adding a special case.
 
-The argv split is Honbu's because Typer would reject `data.uri=x` outright. Tokens
-containing `=` are overrides — which handles Hydra's own `+`, `++` and `~`
-prefixes for free, as all are dash-free. Dash-prefixed tokens are options, and
-every legal one is either a framework option or declared by the command, so their
-arity is always known and a following bare token is never ambiguous. Remaining
-bare tokens are positionals, matched against the command's declaration.
-Positionals reach the command, never the configuration: two ways to set one field
-is how the grammar starts leaking.
+Token routing (the dash-rule separating options from Hydra overrides) lives in
+opt-in `honbu.cli`, not in `honbu.flow` — see D19.
 
 ### D18 — Resolution is pure and returns two objects; identities are declared on the field
 
@@ -558,16 +620,30 @@ split also makes read-only inspection honest: it gets a `Resolution`, and no wri
 method is in reach.
 
 Assigning a derived identity into the configuration is declared **on the field**,
-with a marker naming the hash:
+with a marker naming a non-deferred, non-fanned hash:
 
 ```
-  prepared_dataset_hash: Annotated[ResolvedString, FromHash("prepared_dataset_hash")] = None
+  model_config_hash: Annotated[ResolvedString, FromHash("model_config_hash")] = None
 ```
 
 rather than in a side table of dotted paths. There is no path to mistype, the
 existing marker walkers already find such fields (containers included), and a
 project subclass that adds one is picked up automatically. Only the hash *name*
-remains a string, cross-checked against the hash registry at construction.
+remains a string, cross-checked against the hash registry at construction:
+`validate_identity_fields` refuses unknown hashes, fanned hashes (one field
+cannot hold many digests), non-resolved-only fields, and **deferred
+(`reads_inputs=True`) hashes**.
+
+Banning `FromHash` on `reads_inputs=True` hashes prevents a silent state split:
+`config/resolved.yaml` is written in Wave 1 before work starts (and rewriting it
+mid-run would shift `resolved_digest()` dedup), so a `FromHash` field targeting a
+deferred hash would remain `None` in memory right after `run.complete_hash()` and
+stay `null` in `config/resolved.yaml` forever, contradicting `manifest.json`. It
+also eliminates `CommandRegistry.deferred_paths` plumbing, making it structurally
+impossible for a target template to name a deferred hash field. Deferred hashes
+are run-time facts persisted in `config/hashes/` and `manifest.json`, completed
+via `run.complete_hash()` and read via `run.hash(name)` / `run.hash_entry(name)`
+(symmetric with `run.artifact(name)` and surviving `--resume`).
 
 The marker assigns the **digest**. Any human-readable form is a template concern —
 `{runtime.config_hash:coolname}` — so a separate id *field* is usually redundant
@@ -580,15 +656,13 @@ class that forced construction-time path validation on the hash registry. A
 project **hook** between phases is worse still, and the reasons generalize: a hook
 may write any field, including one already hashed in phase 3, so the recorded
 digest can come to describe a configuration that never ran — unvalidatable by
-construction, where a marker can be checked to target only resolved-only fields.
-Ordering between two hook-assigned identities is invisible, so a refactor that
-swaps two lines yields a template rendering `None` into a directory name with
-nothing raising. The import-time refusal of a target template naming a deferred
-value degrades to a no-op, because nothing records that a field came from a hash.
-And a single hook cannot span phases, so needing one identity before rendering and
-another after grows the phase list by two undocumented entries. There are no hooks
-anywhere in L2: the project already holds the loop and owns work, so there is no
-gap for one to fill.
+construction, where a marker can be checked to target only resolved-only,
+non-deferred fields. Ordering between two hook-assigned identities is invisible,
+so a refactor that swaps two lines yields a template rendering `None` into a
+directory name with nothing raising. And a single hook cannot span phases, so
+needing one identity before rendering and another after grows the phase list by
+two undocumented entries. There are no hooks anywhere in L2: the project already
+holds the loop and owns work, so there is no gap for one to fill.
 
 This yields a clean asymmetry worth stating outright: **output templates are
 discovered by type** — anything typed `OutputBlock` or `OutputLeaf` carries the
@@ -598,98 +672,137 @@ directory pair, so phases 5 and 6 walk the tree and need no declaration — whil
 Two consequences to record rather than rediscover. Resolution is a function of the
 composed configuration, the command, the invocation context *and*, for an
 augmenting command, the existing run manifest it inherits its directory from — so
-it is not a function of the configuration alone. And phase 7 revalidates the tree,
-so every project `model_validator(mode="after")` runs a second time against a tree
-that now has identities assigned and paths absolute; a validator asserting
+it is not a function of the configuration alone. `TemplateContext.now(extras=...)`
+is public (and `resolve(..., context=None)` mints one when omitted), `resolve()`
+enforces both the active-sweep-block refusal and the non-replay refusal of
+authored `RESOLVED_ONLY` fields (receiving `sweep_id: str | None = None`
+explicitly rather than via `composed`), Phase 2 absolutizes `PortablePath` fields
+including inside `dict`/`list` containers while honoring `is_absolute_uri` across
+POSIX/Windows syntaxes, and `Run.warnings` preserves both resolution and
+target-preparation warnings rather than dropping them. And phase 8 revalidates the
+tree, so every project `model_validator(mode="after")` runs a second time against
+a tree that now has identities assigned and paths absolute; a validator asserting
 something true only of an unresolved tree will pass composed and fail resolved.
 
-### D19 — The harness declares once; the CLI library is a seam, not a dependency
+### D19 — Projects own their CLI; Honbu exports opt-in CLI patterns (`honbu.cli`, `honbu.cli.presets`)
 
-The plan was a Typer harness. Building it surfaced a duplication problem: Honbu
-already declares the command tree (name tuples), every option with its arity, and
-every positional with its required flag — it *had* to, because the argv split runs
-before any CLI library sees `argv`, and only declared arity makes a following bare
-token unambiguous. Restating all of that in Typer decorators is a second source of
-truth for the same surface, which is the drift pattern Honbu exists to remove.
+An earlier draft shipped Honbu's own `Application` dispatcher and
+`dispatch_command(handler, raw_tokens)` harness inside `honbu.flow`, baking CLI
+options, positionals, and six hardcoded framework flags into `CommandSpec`. That
+design is **reverted** after auditing it against real `dojo` and `sati` commands.
 
-So the threading — parse, compose, resolve, open the run, call work, exit — is a
-plain function that knows about no CLI library. On top of it, Honbu ships its own
-dispatcher: match the longest registered command path, split the remainder, and
-generate help from the declarations. That is roughly a hundred and fifty lines and
-buys a single source of truth. What it gives up is shell completion, which nothing
-in either project uses today and which can be added against the same declarations
-later.
+Why the harness failed usability in practice:
 
-A project that would rather keep Typer is not blocked: the per-command flow is
-callable with the remaining tokens, so a Typer callback with
-`allow_extra_args=True` is a two-line adapter. `typer` therefore leaves the
-dependency list and `rich` stays, used for help formatting when present with a
-plain fallback when not.
+1. **It broke real CLI libraries even via its escape hatch.** `dispatch_command`
+   demanded raw unparsed argv tokens and ran its own parser, neutralizing Typer's
+   rich `--help`, typed options (`Path(exists=True)`, `Literal` choices), subgroup
+   help, and shell completion — and `dispatch_command` dropped project options and
+   positionals before calling `WorkFn(run)` or `InspectFn(resolution)`.
+2. **It welded away mid-pipeline seams.** Real commands legitimately act between
+   `resolve()` and `open_run()` — verifying a checkpoint inference contract before
+   creating an output directory (`sati infer`/`eval`/`export`), checking idempotent
+   cache reuse before collision refusal (`sati prepare`), or selecting which
+   `CommandSpec` to resolve dynamically (`sati inspect config --command`).
+3. **It contradicted D1 and broke symmetry.** `honbu.compare`, `honbu.materialize`,
+   and `honbu.sweeps` are all library-first and never prescribe command names or
+   flag spellings; forcing CLI ownership inside `honbu.flow` made it the sole
+   exception, and growing `OptionSpec` to fix its ergonomics would have turned
+   Honbu into a half-baked re-implementation of Click/Typer.
 
-One consequence worth stating: a refusal and a defect exit differently. A
-`RefusalError` is a message to the user, so it prints and exits non-zero with no
-traceback. Anything else is a bug in Honbu or the project, so its traceback
-survives — swallowing it would trade a diagnosable crash for a mystery.
+**The new split:**
+
+* **`honbu.flow` is 100% CLI-free.** `CommandSpec` declares lifecycle and schema
+  semantics only (no CLI options, positionals, or flag names). `load_config`,
+  `resolve`, `open_run`, `initialize_run`, and `parent_record` accept plain typed
+  Python arguments. `honbu.core.targets` emits flag-agnostic refusal wording by
+  default with optional CLI hint overrides.
+* **`honbu.cli` provides opt-in, library-agnostic terminal helpers** (importing no
+  Typer): `validate_override_tokens` (dash-rule + bare-comma and brace-quoting
+  diagnostics), `split_dash_rule`, flag-agnostic `select_config_source`, refusal
+  exit handling (`HonbuError` prints cleanly and exits non-zero without a
+  traceback, optional structured-error hook for `--format json`, defects keep
+  tracebacks intact), warning emission, and documented `CONVENTIONAL_FLAGS`
+  (`--config`, `--resolved`, `--fork-from`, `--fork-artifact`, `--config-dir`,
+  `--clobber`, `--resume`).
+* **`honbu.cli.presets` provides opt-in Typer presets**: `HYDRA_CONTEXT_SETTINGS`,
+  ready-made `Annotated` option aliases (`ConfigOpt`, `ResolvedOpt`,
+  `ForkFromOpt`, `ForkArtifactOpt`, `ConfigDirsOpt`, `ClobberOpt`, `ResumeOpt`),
+  customizable option factories so a project can rename any flag or help string
+  while keeping identical semantics, and optional mountable Typer command builders
+  for materialization and comparison. Keeping the public path `honbu.cli.presets`
+  keeps imports crisp today while allowing expansion into submodules later without
+  breaking callers.
+* **`Application` / `SimpleApp` and `dispatch_command` are removed.** Real projects
+  and `examples/linefit` build directly on Typer + `honbu.cli.presets` (or any CLI
+  library they prefer). Guided project scaffolding belongs in an onboarding agent
+  skill (a separate change) rather than a bespoke CLI framework inside Honbu.
+* **Passive `ProjectSpec` & curated top-level exports.** To eliminate repeating
+  `(root_type, compose_spec, hashes, templates, config_hash_name)` across dozens
+  of call sites without reintroducing inversion of control, `honbu.flow` exports a
+  passive frozen `ProjectSpec` dataclass (validating `validate_root_contract` and
+  `validate_identity_fields` on construction) accepted as an optional convenience
+  parameter across `flow`, `sweeps`, `compare`, `materialize`, and `cli.presets`
+  alongside direct kwargs. Top-level `honbu/__init__.py` is curated to the ~25
+  everyday schema, marker, hash, and error symbols while lower-level walker,
+  target, and IO helpers remain under `honbu.core.*`.
 
 ### D20 — One install; the layers are import boundaries, not extras
 
-Hydra, OmegaConf and PyYAML move into the core dependencies. `pip install honbu`
-gives every layer, and a project opts out of a capability by not importing it.
+Hydra, OmegaConf, PyYAML, and Typer live in the core dependencies (`typer`
+replaces unused `rich`, which Typer brings along). `pip install honbu` gives every
+layer and CLI presets with no extras matrix, and a project opts out of any area by
+not importing it.
 
 The extras were justified by dependency weight, and that justification was real:
 `hydra-core` → `omegaconf` → `antlr4-python3-runtime==4.9.*`, an exact pin on a
 2021 release that every consumer now inherits. **This is the accepted cost**, and
 it is the one thing that could force the decision back: a project needing antlr
-4.10+ for something else has no resolution. Accepted because the alternative is
-worse in a way that shows up on everyone's first command rather than in one
-environment's dependency solve — three lazy-import branches that exist only to
-say "install the flow extra", firing during someone's first invocation, plus an
-extras matrix (`[flow]` vs `[compose]` vs `[run]`) presented at adoption time to
-exactly the person least equipped to choose.
+4.10+ for something else has no resolution. `typer` itself is small, pure Python,
+and introduces no pinning hazard. Accepted because the alternative is worse in a
+way that shows up on everyone's first command rather than in one environment's
+dependency solve — lazy-import branches that exist only to say "install the extra",
+firing during someone's first invocation, plus an extras matrix presented at
+adoption time to exactly the person least equipped to choose.
 
 Two things this gives up, one of which is bought back:
 
 *Structural enforcement of the layering.* It was previously **impossible** for
 `core/` to import a composition primitive, because the package was not
 installed. That is now convention. It is bought back with a test asserting that no
-module under `core/` imports hydra, omegaconf or yaml — cheap, and treated as
-non-optional, because "two modules that should be independent quietly grow a
-dependency" is the drift Honbu exists to remove.
+module under `core/` imports hydra, omegaconf, yaml, or typer, and neither
+`flow/` nor `cli/` top-level imports typer (only `cli/presets` imports typer) —
+cheap, and treated as non-optional, because "two modules that should be
+independent quietly grow a dependency" is the drift Honbu exists to remove.
 
 *The zero-dependency core case.* A project wanting only the canonical encoder
-and the markers now installs antlr to get them. Not bought back; judged not worth
-an extras matrix.
+and the markers now installs antlr and typer to get them. Not bought back; judged
+not worth an extras matrix.
 
 Genuine launchers stay optional, because they are not capabilities Honbu
-implements: `submitit`, `optuna` and anything Slurm-shaped are extras. See D22 for
-why they are used as libraries rather than as Hydra plugins.
+implements: `submitit` (`[slurm]`), `optuna` (`[search]`), and anything
+Slurm-shaped are extras, delivered in separate follow-up changes after the core
+and local sequential sweep engine stabilize. See D22 for why they are used as
+libraries rather than as Hydra plugins.
 
-### D21 — The configuration identity is optional and project-bound
+### D21 — The configuration identity is optional and project-bound, with an opt-in preset
 
-`runtime.config_hash` carries no framework-supplied hash binding, and
-`runtime.config_id` defaults to null. A project that wants a hash-derived
-configuration identity declares the hash and binds the field; a project that wants
-none omits both, and neither the run lifecycle nor the manifest requires them.
+Bare `RuntimeConfig` keeps `config_hash` unbound and `config_id` defaulting to
+null. A project that wants no configuration identity uses `RuntimeConfig`
+unmodified; neither the run lifecycle nor the manifest requires one.
 
-This reverses a decision taken and reverted inside one review pass, which is worth
-recording rather than quietly overwriting. The base block briefly bound
-`config_hash` to a reserved hash name, because `config_id` defaulted to a template
-over it and that default was otherwise unusable — it silently minted entropy until
-the null-token refusal exposed it. Binding fixed the default but made declaring a
-hash *mandatory*, which contradicts a requirement written twenty lines earlier:
-"the framework SHALL NOT infer identities from hashes: not every hash warrants an
-identity, and not every identity derives from a hash." Defaulting `config_id` to
-null resolves both — the shipped block has no identity behavior and no landmine.
+This preserves the resolution of an earlier review pass: binding `config_hash` on
+bare `RuntimeConfig` made declaring a hash *mandatory*, contradicting "the
+framework SHALL NOT infer identities from hashes." However, nearly every real
+project *does* want the conventional `config_hash` → `config_id` coolname wiring,
+and forcing each one to hand-write the same marker-annotated subclass invites
+copy-paste mistakes. Honbu therefore exports an opt-in **`HashedRuntimeConfig`**
+subclass of `RuntimeConfig` pre-wired to `CONFIG_HASH_NAME` (`config_hash` bound
+with `FromHash("config_hash")` and `config_id = "{runtime.config_hash:coolname}"`).
+Projects wanting a different hash name subclass `RuntimeConfig` directly.
 
-The cost is real and is accepted as documentation rather than mechanism. Without
-`config_id`, a project's first output template reaches for `runtime.run_id` or
-`{:timestamp}`, both fresh per invocation, and a run directory named from fresh
-entropy cannot be re-found by a later `--resume`. Every project therefore wants a
-configuration-derived component in its run directory, and that is boilerplate the
-adoption guide leads with rather than something the framework enforces.
-
-`config_hash` remains the *conventional* name, and comparison takes the identity
-name as a parameter rather than assuming it.
+`config_hash` remains the *conventional* name, not a reservation: `open_run`,
+`parent_record`, and comparison all take the identity/hash name as a parameter
+(defaulting to `CONFIG_HASH_NAME`) rather than hardcoding `"config_hash"`.
 
 ### D22 — Honbu expands sweeps itself, over Hydra's parser, never over multirun
 
@@ -724,7 +837,11 @@ the task function's **return value** as the objective, and a Honbu work function
 returns `None` by design (D14). Used directly, Optuna's ask/tell API separates
 proposing parameters from running the job and its RDB storage makes the study
 resumable — so the objective is read from a child's recorded `best.metrics` and
-survives the driver process dying, which the plugin's version does not.
+survives the driver process dying, which the plugin's version does not. The
+`submitit` and `optuna` adapters themselves will land in separate follow-up
+changes built over this exact `child_argv` + `best.metrics` seam while
+`establish-honbu-framework` establishes the core and local sequential sweep
+engine.
 
 Consequently Honbu refuses a **bare top-level comma** on an ordinary
 configuration override. In Hydra's grammar `epochs=10,20` is a multirun sweep, and
@@ -748,19 +865,31 @@ anything reporting sweep state refreshes first. A count with no timestamp would
 assert currency it does not have.
 
 Preparation materializes every child up front: expand the matrix, resolve each
-combination, check the gate, then write each child's run directory in the
-`initialized` state without running anything. Execution is then a loop over the
-index, and it needs no new vocabulary because Honbu's existing resumable set is
-already exactly right: `initialized`, `running`, `interrupted` and `failed` are
-resumed, `completed` is skipped. `running` being resumable is what covers a Slurm
-timeout, where SIGTERM does not raise and the child is left mid-flight.
+combination (skipping project cross-field `@model_validator` rejections into
+`Preparation.skipped` and `index.json["skipped"]` while still refusing field-level
+type/literal/constraint typos), check the gate and target-template stability, then
+write each child's run directory in the `initialized` state without running
+anything. Projects wanting config-driven sweep output resolution opt into
+**`SweepOutputBlock(OutputBlock)`** (peer to `training_outputs`, refusing any
+`dir_template` referencing a swept axis path, persisting `config/composed.yaml`,
+`config/resolved.yaml`, and `config/index.json`, with `OutputLeaf.enabled`
+disabling reporting leaves), while callers may still pass an explicit `sweep_dir`
+(persisting `config/composed.yaml` and `config/index.json`). Execution is then a
+loop over the index (`execute_sweep` with `on_error="stop" | "continue"` and
+validated `only=` accepting indices or gate values), and it needs no new
+vocabulary because Honbu's existing resumable set is already exactly right:
+`initialized`, `running`, `partial`, `interrupted`, and `failed` are resumed,
+`completed` is skipped. `running` being resumable is what covers a Slurm timeout,
+where SIGTERM does not raise and the child is left mid-flight.
 
-Two consequences worth stating. Every child is reachable by
-`--resolved <child> --resume` — one uniform call, whether it never started or died
-at epoch 40 — which is why the driver can be a `for` loop and why a Slurm array
-over the child directories needs no Python glue at all. And a sweep is pausable at
-any granularity the project likes, including "stop after this child, I need the
-GPU", with no cooperation from the sweep engine.
+Two consequences worth stating. Every child is reachable by one uniform resume
+invocation against its run directory — conventionally `--resolved <child> --resume`,
+with `child_argv` parameterizing the flag spellings and `execute_sweep` taking a
+project-supplied runner callback — whether it never started or died at epoch 40.
+That uniformity is why the driver can be a `for` loop and why a Slurm array over
+the child directories needs no Python glue. And a sweep is pausable at any
+granularity the project likes, including "stop after this child, I need the GPU",
+with no cooperation from the sweep engine.
 
 A second writer is deliberately avoided: nothing but the child writes the child's
 manifest, so the index and the states cannot disagree. This also settles run
@@ -812,6 +941,17 @@ An override contesting a swept path is refused rather than silently losing. It
 would otherwise be a no-op, since the axis assigns that path per child regardless,
 and a no-op that looks like an instruction is worse than an error.
 
+To eliminate hand-rolled Hydra closure boilerplate (and prevent dropping non-sweep
+overrides, `extra_dirs`, nested `a/b` group syntax, or the group-shadow check),
+`plan_sweep` and `prepare_sweep` accept `compose_spec: ComposeSpec | None = None`
+and `extra_dirs=()` directly, building both per-child composition and
+`check_no_group_is_shadowed` automatically via exported `sweep_composers(...)`,
+while keeping explicit `compose_child`/`compose_without` callbacks as escape
+hatches. Empty axis lists `[]`, empty nested mappings, and empty covariant options
+`{}` are refused before expansion, whereas single-value ordinary axes
+(`sweep.axes.epochs=[10]`) remain permitted for temporarily pinning an axis via
+CLI overrides.
+
 ### D25 — The project declares what completion means; Honbu reserves less
 
 Four changes with one root cause. `open_run` recorded `finished` unconditionally
@@ -853,90 +993,118 @@ never intended to work this run." An earlier draft of this decision forced a
 preparing command to declare the working command's steps just to land on `partial`,
 and needed a spec rule saying so — a symptom whose cause this removes.
 
-**`--init` is removed.** It was the only reserved flag that decided *how much
-project work happens*, rather than acting before or around project code — the
-other six settle which configuration is used and whether Honbu may write where it
-wants, all before any project code runs. That is the line, and `--init` was its
-only crossing. With `partial`, the capability needs no flag at all: a project
+**`--init` is removed** (and Honbu owns no reserved CLI flags; see D19). `--init`
+was the only flag that decided *how much project work happens*, rather than acting
+before or around project code. With `partial` and `advances_run=False`, a project
 declares its own `prepare` command whose handler opens the run and runs no steps,
 naming it whatever it likes. `initialize_run()` survives as a function, because
-sweep preparation genuinely needs it (D23) and that is Honbu's own code rather than
-a user-facing surface. Removing the flag also frees the word `init` for the
-near-universal "scaffold a project here" meaning.
+sweep preparation genuinely needs it (D23). Removing `--init` also frees the word
+`init` for the near-universal "scaffold a project here" meaning.
 
-**Flag applicability is derived, never registered.** The behavior flags were
-accepted on every command and filtered only in help, so help and the parser
-disagreed: `inspect config` advertised neither `--clobber` nor `--resume` while the
-parser silently accepted both, and a typo produced silence instead of an error.
-Every one of them is already implied by an existing declaration — `--config-dir`
-applies where the command composes, `--clobber` where it can clear something,
-`--resume` where it produces into a target — so a second declaration would only
-create something to drift from the first. Derivation also makes help a description
-of behavior rather than a parallel opinion about it. This is D12's move again: the
-declaration supplies the radius, the flag supplies only permission.
+**Source applicability lives on `CommandSpec`; CLI option surfaces belong to the
+project.** `CommandSpec` still declares which `config_sources`, `target`, and
+`scope` apply semantically, and `honbu.cli.select_config_source` enforces accepted
+sources at call time. Which CLI flags a command exposes and how its help is
+rendered belong to the project's CLI library (optionally importing `honbu.cli.presets`),
+removing the parallel parser-vs-help drift problem at the root (D19).
 
-### D26 — Comparison is levelled, and the levels are the markers
+### D26 — Comparison is levelled, validates schema defaults, and evaluates pure hashes
 
 Comparing two configurations is not one question, it is four, and the framework
-already has the vocabulary for all of them: `literal` compares everything,
-`authored` strips resolved-only fields, `behavioral` strips everything the markers
-exclude from behavioral sources, and `by_hash` attributes each difference to the
-declared hashes it would move.
+already has the vocabulary for all of them: `literal` compares raw dicts as
+written, `authored` validates through `root_type` (normalizing schema defaults)
+and strips resolved-only fields, `behavioral` strips everything the markers
+exclude from behavioral sources, and `by_hash` evaluates declared hashes and
+attributes differences.
 
-`behavioral` is the valuable one and it is nearly free — it is exactly the
-projection a digest already sees, so it is `excluded_source_paths()` and nothing
-new. It also gives a definition to a term the sweep spec already used without one:
-a **residual difference** is one that appears at `literal` and vanishes at
-`behavioral`. Run comparison is therefore this operation with runs as operands, and
-must share the implementation rather than growing a second diff.
+Validating operands through `root_type` at `authored`, `behavioral`, and `by_hash`
+is load-bearing: `resolved.yaml` materializes every schema default while an
+authored file omits defaulted keys. Without validation, comparing an authored file
+against the run produced from it reports dozens of false `<absent> vs default`
+differences; `literal` stays raw so callers still have a true as-written diff
+(and so group fragments remain comparable at `literal`).
+
+Prior-run operands use four clean sources — `default`, `file`, `composed`
+(`config/composed.yaml`), and `resolved` (`config/resolved.yaml`, accepting either
+a file or a run directory, eliminating the redundant `run` source) — with optional
+per-operand `overrides`, `extra_dirs`, and `config_index`.
+
+`behavioral` is the valuable baseline and is nearly free — it is exactly the
+projection a digest already sees (`excluded_source_paths()`). It also defines a
+**residual difference**: one that appears at `literal` and vanishes at
+`behavioral`. Run comparison (`compare_runs`) shares this exact implementation.
 
 Availability follows from inputs — bare mappings get `literal`, a root type unlocks
 `authored` and `behavioral`, a hash registry unlocks `by_hash` — and an unavailable
-level is refused rather than downgraded. A comparison that quietly answered a
-weaker question than the one asked would be worse than none.
+level is refused rather than downgraded.
 
-The one honest limit is `by_hash`. Attribution works by asking whether a differing
-path falls inside a field-selected hash's include set, which is decidable; verified
-against the demo, `model.backbone` moves `config_hash`, `training_outputs.dir_template`
-moves nothing declared, and `runtime.run_id` is marker-excluded from every digest.
-But a hash whose source a *callable* builds cannot be attributed statically, and an
-input-reading one cannot be run at comparison time at all. Those are reported
-**opaque** — neither implicated nor cleared. Omitting them would imply a
-completeness the analysis lacks, and "moves no identity" versus "moves no identity
-I can see" support different decisions.
+**`by_hash` evaluates every pure (`reads_inputs=False`) hash.** An earlier draft
+attributed only `FieldHash` statically and marked every `SourceHash` and
+`FannedHash` opaque. Because D5 explicitly observes that almost every domain hash
+in `dojo` and `sati` (`target_schema_hash`, `model_config_hash`,
+`preprocessing_hash`, `head_hashes`) is a `SourceHash` or `FannedHash` with
+`reads_inputs=False`, static-only attribution left 5 of 6 hashes opaque. Calling
+`hashes.compute(..., input_reading=False)` on the validated operands gives exact
+digests and per-hash source diffs for every pure hash (refusing missing `command`
+when a registry carries command-scoped `FieldHash` declarations), while reserving
+**opaque** honestly for `reads_inputs=True` hashes (`dataset_hash`, `ByteHash`)
+whose external disk/network inputs cannot be read at config-compare time.
 
-### D27 — Materialization takes its closure from the compositor, not from a parser
+### D27 — Materialization is configs-only, closure-driven, and checked by two drift views
 
 Packaged defaults already work on the read side: `ComposeSpec.packaged` composes
 from an installed package and the local directory shadows it per group. What was
 missing is the write side — getting that content into a working tree so it can be
 edited.
 
-The mechanism is a closure over declared roots, and the closure comes from the
-compositor's **own record of what it selected** (`hydra.runtime.choices`), not from
-re-parsing defaults lists. Verified: composing with the Hydra config returned gives
-`{'heads': 'species_only', ...}` — the exact group→option map, transitive, with the
-compositor's internal groups distinguishable by prefix. Re-implementing defaults-list
-resolution would be a second copy of the selection rules, and its drift would be
-silent in the worst way: the copied tree would compose differently from the packaged
-tree it was copied from.
+**Configs only.** Materialization covers packaged configuration trees and nothing
+else (no fixture datasets or binary data assets). Projects wanting starter data
+link to online datasets or handle dataset setup in their own CLI beside Honbu's
+config materialization, keeping one packaged tree mapping cleanly onto one local
+config directory.
 
-Scope *names* are the project's — `--minimal`, `--supervised`, `--ssl` are dojo's
-vocabulary, and Honbu ships none, exactly as it ships no step names. What Honbu owns
-is closure, planning, and the create/skip/overwrite discipline. Non-configuration
-resources are materializable too, because a starter configuration pointing at a
-fixture dataset is only useful if the dataset arrives with it.
+The mechanism is a closure over declared roots, and the closure comes from the
+compositor's **own record of what it selected** (`hydra.runtime.choices`), not
+from re-parsing defaults lists. Verified: composing with the Hydra config returned
+gives the exact transitive group→option map, with `hydra/*` internal groups
+filtered out and `@package` suffixes stripped (`group@pkg` → `group`) so
+package-relocated groups map to their real packaged file paths. Roots may be
+packaged configuration names (with optional overrides) or an external authored
+file (materializing only its packaged dependencies while leaving the authored file
+untouched). Re-implementing defaults-list resolution would be a second copy of the
+selection rules, and its drift would be silent: the copied tree would compose
+differently from the packaged one it was copied from.
+
+Scope *names* are the project's — Honbu ships none, exactly as it ships no step
+names. Each `MaterializationScope` cleanly separates closure `roots`, optional
+verbatim config-tree `files` (for non-YAML config files like TOML styles or
+copying a whole directory), and optional `exclude` globs; directory walks always
+skip Python package plumbing (`__init__.py`, `__pycache__/`, `*.pyc`, `*.pyo`). A
+unified `plan_materialization` derives the packaged root from `ComposeSpec`
+automatically (with an optional override for unpacked test trees) and returns a
+`MaterializationPlan` exposing `.created`, `.skipped`, `.overwritten`, and
+`render_plan()`.
 
 Materialization never deletes. Deciding a local file is obsolete requires knowing
 whether a human edited it, which the framework cannot know — so it adds, and
-divergence is answered by *comparison* (D26) rather than by a lockfile. That is the
-better answer anyway: it reports what differs rather than merely that something did.
-It also finally answers a question the framework has been carrying unanswered, since
-continuing a run reapplies schema defaults at continuation time and a default that
-moved is otherwise picked up silently.
+divergence is answered without a lockfile by **two complementary drift views**:
 
-No command name is reserved, for the same reason no option governing how much work
-runs is reserved (D25): reserving a name is the same imposition by another route.
+* **Composed drift (`compare_materialized_config`)** composes packaged-only (via
+  explicit `ComposeSpec.local = None`, eliminating any sentinel-directory hack)
+  against local-shadowing-packaged, accepts `overrides` for non-default groups or
+  experiments, and reuses `honbu.compare.compare_configs` (D26). Because the local
+  side still falls through to packaged defaults, partial local trees compare
+  cleanly and answer *"ignoring paths, comments, and templates, does my local
+  config actually change behavior or move a hash?"*
+* **File-level drift (`materialized_file_drift` + `render_file_drift`)** scans the
+  local tree against packaged defaults (respecting plumbing and optional
+  exclusions) and classifies paths as `modified`, `unchanged`, `local_only`, or
+  `packaged_only` — answering *"after an upgrade or local edits, which files in
+  `./configs/` differ?"*
+
+No command name is reserved (D19, D25): `honbu.materialize` exposes pure Python
+functions, and `honbu.cli.presets` MAY offer an optional Typer command builder
+mountable under whatever name a project chooses.
 
 ### D28 — A directive is authored and excluded; the sweep block is the first one
 

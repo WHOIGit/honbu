@@ -1,11 +1,12 @@
 ## ADDED Requirements
 
 ### Requirement: Declared commands own their write scope
-A project SHALL declare each command with a name that is a path through the
-command tree, whether it produces a run directory or augments an existing one,
-the write scope it owns, and the hashes it computes. Declared dotted paths SHALL
-be validated against the schema when the command registry is constructed. A
-command declaring no target SHALL be structurally incapable of clearing anything.
+A project SHALL declare each command with lifecycle and schema metadata only — a
+name tuple, producing or augmenting mode, target/scope paths, hashes, steps,
+completion set, `advances_run`, accepted `config_sources`, and optional default
+`fork_artifact` — with no CLI option or positional declarations. Declared dotted
+paths SHALL be validated at registry construction, and a targetless command SHALL
+be structurally incapable of clearing anything.
 
 #### Scenario: Two commands, two targets
 - **WHEN** two commands over one root configuration declare different targets
@@ -56,25 +57,28 @@ reference one.
 - **THEN** it resolves against the target directory rendered in the prior phase
 
 ### Requirement: Command-aware side-effect-free resolution
-Resolution SHALL be command-aware and SHALL perform no filesystem writes; it
-SHALL derive identities and resolve output paths for the active command, and MAY
-resolve without external inputs for read-only inspection, reporting
-input-reading identities as deferred. Resolution SHALL return its warnings rather
-than emitting them. Resolution SHALL take the composed configuration, the command,
-the invocation context, and — for an augmenting command — the existing run
-manifest whose directory it inherits.
+Resolution SHALL be command-aware, perform no filesystem writes, and return its
+warnings rather than emitting them. It SHALL accept optional `TemplateContext`
+(minting via `TemplateContext.now()` when omitted), explicit `sweep_id`, and
+`existing_target` for augmenting commands; when `replay=False`, it SHALL refuse
+non-null authored `RESOLVED_ONLY` fields and active sweep blocks.
 
 #### Scenario: Read-only inspection without inputs
 - **WHEN** a configuration is resolved for inspection with its inputs absent
 - **THEN** configuration identity and active output paths resolve and
   input-reading identities are reported as deferred
 
+#### Scenario: Active sweep block refused directly in resolution
+- **WHEN** `resolve()` is called on a composed configuration carrying active sweep
+  axes
+- **THEN** resolution refuses and directs the caller to prepare the sweep instead
+
 ### Requirement: Resolution and run are separate objects
-Resolution SHALL return an object exposing the two configuration views, the
-computed hash entries, the deferred set, the resolved target and the warnings, and
-carrying no method that writes. The lifecycle SHALL construct a separate run object
-around it once the target is prepared; that object SHALL own the manifest and every
-write, and SHALL be what work receives.
+Resolution SHALL return a pure object exposing both configuration views, computed
+hash entries, deferred names, resolved target, and warnings, carrying no write
+methods. The lifecycle SHALL wrap it in a `Run` once prepared, owning the manifest,
+all writes, `run.warnings` (preserving resolution and target warnings), and
+`run.hash()` / `run.hash_entry()` readers symmetric with `run.artifact()`.
 
 #### Scenario: Inspection cannot write
 - **WHEN** a configuration is resolved for read-only inspection
@@ -83,6 +87,16 @@ write, and SHALL be what work receives.
 #### Scenario: Work writes through the run
 - **WHEN** work registers an artifact or completes a deferred hash
 - **THEN** it does so through the run object, which is the single writer
+
+#### Scenario: Reading resolved and deferred hashes from the run
+- **WHEN** work calls `run.hash(name)` or `run.hash_entry(name)` for a resolved
+  hash or a completed deferred hash (including across `--resume` and fanned
+  `<name>.<key>` entries)
+- **THEN** it returns the persisted digest or `HashEntry`, or `None` if uncompleted
+
+#### Scenario: Target warnings survive onto the run
+- **WHEN** target preparation produces a warning (such as a case collision)
+- **THEN** `run.warnings` includes both resolution warnings and target warnings
 
 ### Requirement: Revalidation re-runs project validators
 Because the final phase revalidates the tree, every project model validator SHALL
@@ -95,21 +109,22 @@ a composed one.
 - **THEN** it passes composition and fails revalidation, rather than failing silently
 
 ### Requirement: A target template may not reference a deferred value
-A command's target template SHALL NOT reference a value produced by a deferred
-hash. This SHALL be checked twice: against the committed schema default when the
-command registry is constructed, and against the template actually in force when
-the target renders. The second check is not redundant — a composed configuration
-may override the template, so the import-time check sees a string that never runs.
+A command's target template SHALL NOT depend on a deferred or unresolved hash.
+Input-reading (`reads_inputs=True`) hashes SHALL be prevented structurally by
+forbidding `FromHash` bindings on them at construction; if a `reads_inputs=False`
+hash returns `None` during resolution, referencing its `FromHash` field in a
+target template SHALL be refused before rendering.
 
-#### Scenario: Output directory named after a byte-reading digest
-- **WHEN** a command's target template references an input-reading hash
-- **THEN** registry construction fails, naming the command and the token
+#### Scenario: Deferred hash prevented structurally
+- **WHEN** a schema attempts to bind a `reads_inputs=True` hash via `FromHash`
+- **THEN** identity validation fails at construction before any template can
+  reference it
 
-#### Scenario: Deferred value reached through an overridden template
-- **WHEN** a composed configuration overrides the target template with one
-  naming a field a deferred hash feeds
-- **THEN** resolution refuses before the target is rendered, rather than naming
-  the run directory after a value that is still null
+#### Scenario: Dynamically absent hash in target template
+- **WHEN** a `reads_inputs=False` hash returns `None` for a configuration and the
+  target template references its `FromHash` field
+- **THEN** resolution refuses before the target is rendered, naming the unassigned
+  field rather than rendering null into a directory name
 
 ### Requirement: Pure template rendering
 Template rendering SHALL be pure: the same template and values SHALL always
@@ -154,6 +169,12 @@ field is path-marked or the function declares that it emits a whole path.
 - **WHEN** a token whose value is an absolute path is substituted
 - **THEN** its separators survive rather than being sanitized away
 
+#### Scenario: Misspelled template function or bad format spec
+- **WHEN** a template uses a suffix that is neither a registered function nor a
+  valid Python format specifier (such as `{experiment.name:slugg}`)
+- **THEN** rendering raises `TemplateError` as a user-facing refusal rather than
+  an uncaught `ValueError`
+
 ### Requirement: Project-extensible token functions
 The framework SHALL provide a registry of template token functions a project
 extends with its own, and the project SHALL decide whether overriding a
@@ -177,6 +198,18 @@ any digest.
 #### Scenario: Template survives resolution
 - **WHEN** a directory template is rendered into its directory field
 - **THEN** the template remains in the resolved configuration as the authored record
+
+#### Scenario: Schema-defaulted leaf overridden
+- **WHEN** a schema defines a default `dir` (or `dir_template`) on an `OutputLeaf`
+  and the caller authors the other field without nulling the default
+- **THEN** Phase 7 checks authored fields (matching Phase 6), renders cleanly,
+  collects leaf template warnings, and enforces path-length limits
+
+#### Scenario: Augmenting command re-renders templated leaf
+- **WHEN** an augmenting command replays a prior run (`--resolved`) with overrides
+  affecting a templated leaf in its `scope` and does not pin a literal `leaf.dir`
+- **THEN** Phase 7 re-renders `leaf.dir_template` so the augmenting output lands
+  in a fresh leaf rather than colliding on the prior run's rendered leaf dir
 
 ### Requirement: Path resolution semantics
 An output root SHALL resolve to an absolute path. An absolute or
@@ -219,10 +252,10 @@ with every path joined, of the same type. The two SHALL produce identical digest
 
 ### Requirement: Collision safety
 A mutating command SHALL refuse existing content within its declared write scope
-by default. Under an explicit override it SHALL clear only that scope, and only
-where the scope lies strictly within the resolved containment root the command
-declares. Refusal SHALL describe what occupies the target, including the state
-and identity of any run recorded there.
+by default. Under an explicit override it SHALL clear only that scope, strictly
+within the declared containment root. Refusals SHALL describe the occupant using
+flag-agnostic wording by default and SHALL accept an optional CLI hint so a
+project can name its own flags.
 
 #### Scenario: Existing output
 - **WHEN** content exists in scope without the override
@@ -239,6 +272,17 @@ and identity of any run recorded there.
 #### Scenario: Case-colliding sibling
 - **WHEN** a sibling directory differs from the target only in letter case
 - **THEN** resolution warns that the two are one directory on Windows
+
+#### Scenario: Clobber and resume are mutually exclusive
+- **WHEN** a caller passes both `clobber=True` and `resume=True`, or passes
+  `resume=True` to an augmenting command
+- **THEN** opening the run refuses outright rather than silently ignoring a flag
+
+#### Scenario: Disabled leaf and file-at-leaf scope safety
+- **WHEN** an augmenting command's scope includes a disabled `OutputLeaf`
+  (`enabled=False`), or a leaf path exists as a regular file
+- **THEN** disabled leaves are neither created nor cleared, and a file at an
+  enabled leaf is refused without `clobber` (or unlinked with `clobber`)
 
 ### Requirement: Declared steps
 A command's named steps, each with its own write scope and a resume policy, SHALL
@@ -285,14 +329,17 @@ restarted, whereas a step wrongly continued produces a visible wrong result.
   to it from the manifest
 
 ### Requirement: Resume
-An explicit resume override SHALL permit writing into an occupied run directory,
-and SHALL be refused when the recorded state is completed. Resuming SHALL skip
-steps already recorded complete.
+An explicit resume override SHALL permit writing into an occupied run directory
+in any resumable state and SHALL be refused when completed. Resuming SHALL skip
+every step already satisfied (`completed` or `not_applicable`), SHALL preserve
+the run's recorded `run_id` when not overridden, and SHALL refuse behavioral
+`config_hash` drift by default (`allow_config_drift=False`), directing callers to
+fork or clobber instead.
 
 #### Scenario: Resuming an interrupted run
 - **WHEN** an interrupted run is resumed
-- **THEN** completed steps are skipped and the interrupted step runs again under
-  its declared resume policy
+- **THEN** completed and not-applicable steps are skipped via `run.skip()` and
+  the interrupted step runs again under its declared resume policy
 
 #### Scenario: Starting a later step in a new invocation
 - **WHEN** a run directory holds a persisted configuration and no work has run
@@ -305,6 +352,18 @@ steps already recorded complete.
 #### Scenario: Resuming a completed run
 - **WHEN** resume is requested against a completed run
 - **THEN** it is refused, and starting from the same configuration is offered
+
+#### Scenario: Resuming with changed behavioral configuration refused
+- **WHEN** resume resolves to a different `config_hash` than the interrupted run's
+  recorded `config_hash` without `allow_config_drift=True`
+- **THEN** resume refuses, directing the caller to fork from the run or clobber
+  and start fresh
+
+#### Scenario: Resuming from default config preserves run_id
+- **WHEN** an interrupted run is resumed via default config on a deterministic
+  template without overriding `run_id`
+- **THEN** the run's recorded `run_id` is preserved and configuration index 1 is
+  reused rather than allocating a duplicate `config/2/` bundle
 
 ### Requirement: Atomic artifact writes
 Every framework-written artifact SHALL be written to a uniquely named temporary
@@ -329,7 +388,18 @@ mutation, so an interrupted run still carries a useful record.
 
 #### Scenario: Failed invocation
 - **WHEN** work raises after initialization
-- **THEN** the manifest records the failure and the provenance bundle remains
+- **THEN** the manifest records the failure (`kind` and `message` on both
+  `failure` and the timeline event) and the provenance bundle remains
+
+#### Scenario: Stale failure cleared on resumed run
+- **WHEN** a previously failed or interrupted run resumes and finishes
+- **THEN** top-level `manifest["failure"]` is cleared to null while the historical
+  failure event remains on the append-only timeline
+
+#### Scenario: Incremental progress merge and full replacement
+- **WHEN** work calls `run.record_progress(...)` repeatedly with different keys
+- **THEN** keys merge into `manifest["progress"]` rather than erasing earlier
+  keys, while `run.set_progress(...)` replaces the progress mapping wholesale
 
 ### Requirement: Run states derived from the timeline
 The manifest SHALL carry one of six states — initialized, running, partial,
@@ -348,6 +418,11 @@ Every state but completed SHALL be resumable.
 #### Scenario: Project event
 - **WHEN** a project records a domain event
 - **THEN** it appears on the timeline and the state is unchanged
+
+#### Scenario: State derived from timeline on load
+- **WHEN** `Manifest.load` opens a manifest (default `derive_state=True`)
+- **THEN** `state` is derived in memory by scanning backward to the last reserved
+  timeline event, with `derive_state=False` available to opt out
 
 ### Requirement: A producing command declares what completion means
 A producing command SHALL declare which of its steps constitute a complete run,
@@ -455,10 +530,10 @@ substrate.
 
 ### Requirement: Invocations and per-invocation configuration
 The manifest SHALL record every invocation against a run directory, each with its
-command, argument text, timestamp, computed configuration identity, and a
-configuration index. Configuration indices SHALL be deduplicated on the canonical
-bytes of the resolved configuration. Timeline events SHALL reference the
-invocation that produced them.
+command, argument text, timestamp, computed configuration digest (looked up by a
+parameterized hash name defaulting to `config_hash`), and a configuration index
+deduplicated on the canonical bytes of the resolved configuration. Timeline events
+SHALL reference the invocation that produced them.
 
 #### Scenario: Repeated invocation with the same configuration
 - **WHEN** an augmenting command runs twice with identical configurations
@@ -468,6 +543,13 @@ invocation that produced them.
 - **WHEN** an invocation supplies overrides changing the resolved configuration
 - **THEN** a new configuration index is recorded and its bundle persisted beside
   the first
+
+#### Scenario: Augmenting overrides preserve producing run hashes
+- **WHEN** an augmenting command runs with overrides (`config_index > 1`)
+- **THEN** its own hashes persist in `config/<N>/hashes/` and
+  `invocations[i]["config_hash"]`, while top-level `manifest["hashes"]` keeps the
+  producing run's existing digests intact and only adds newly introduced hash
+  names
 
 ### Requirement: Config provenance bundle
 A mutating command SHALL atomically persist the composed configuration, the
@@ -485,15 +567,23 @@ path.
 - **WHEN** work completes
 - **THEN** the manifest records its registered artifacts and identities
 
-### Requirement: Recorded lineage for continued runs
-Continuing from an existing run SHALL produce a new run directory and SHALL record
-the parent run directory, its configuration identity, and the artifact continued
-from. The framework SHALL NOT interpret whether the child restores training state
-or only loads weights.
+### Requirement: Recorded lineage for forked runs
+Forking from an existing run SHALL produce a new run directory and SHALL record
+the parent run directory, its configuration digest (parameterized hash name), the
+selected `artifact_key`, and its `artifact` path via public `parent_record`. A
+verified parent artifact SHALL be required, selectable at call time with an
+optional command default. Honbu SHALL NOT interpret weight-vs-state restoration.
 
-#### Scenario: Continuing a completed run
-- **WHEN** a run is continued with an override
-- **THEN** a new run directory is created whose manifest names its parent
+#### Scenario: Forking a completed run
+- **WHEN** a run is forked with an override and a registered parent artifact key
+- **THEN** a new run directory is created whose manifest records `parent` with
+  `run_dir`, `config_hash`, `artifact_key`, and `artifact`
+
+#### Scenario: Choosing among multiple parent artifacts
+- **WHEN** a parent registers `best_checkpoint` and `last_checkpoint` and the
+  caller selects `best_checkpoint`
+- **THEN** `parent_record` verifies and records `best_checkpoint` rather than
+  forcing a single hardcoded key
 
 ### Requirement: One writer per mutable artifact
 Every artifact that is rewritten over a run's life SHALL have exactly one writer.

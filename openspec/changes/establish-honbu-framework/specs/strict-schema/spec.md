@@ -39,12 +39,20 @@ elements as well as direct submodels.
 - **WHEN** a marked field lives inside a mapping-of-models or sequence-of-models
 - **THEN** the walker enumerates it with a container step in its path
 
+#### Scenario: Authoring a resolved-only field is refused
+- **WHEN** a non-replay composed configuration (`replay=False`) authors a non-null
+  value for a `RESOLVED_ONLY` field (such as `runtime.config_hash` or
+  `runtime.sweep_id`)
+- **THEN** resolution refuses naming the field, whereas `replay=True` accepts
+  persisted resolved values and `resolve(..., sweep_id=...)` assigns `sweep_id`
+  explicitly
+
 ### Requirement: Derived identities are declared on the field
-A field receiving a computed identity SHALL declare the hash it comes from with a
-marker on the field itself, not in a separate table of paths and not by a project
-callback. The declared hash name SHALL be validated against the hash registry at
-construction. Such a field SHALL receive the digest; any human-readable form SHALL
-be a template concern rather than a property of the declaration.
+A field receiving a computed digest SHALL declare the hash with a `FromHash`
+marker on the field itself, validated against the hash registry at construction.
+A `FromHash` binding SHALL target a resolved-only field and a non-fanned,
+non-deferred (`reads_inputs=False`) hash. The field SHALL receive the digest;
+human-readable forms remain a template concern.
 
 #### Scenario: Marked identity field is assigned
 - **WHEN** a configuration is resolved
@@ -62,6 +70,11 @@ be a template concern rather than a property of the declaration.
 - **WHEN** a field marked as coming from a hash is not resolved-only
 - **THEN** construction fails, because assigning an authored field after its
   digest was computed would make the digest describe a configuration that never ran
+
+#### Scenario: Deferred hash rejected on FromHash
+- **WHEN** a field declares `FromHash` naming a `reads_inputs=True` hash
+- **THEN** construction fails naming the field and hash, because deferred digests
+  belong to run-time completion and `run.hash()` rather than `config/resolved.yaml`
 
 ### Requirement: Template-valued fields are rendered in place
 A field MAY declare that its own value is a template, and resolution SHALL render
@@ -155,6 +168,22 @@ No shipped default SHALL reference a field the framework does not itself guarant
 - **THEN** no template refuses, because no shipped default references the
   configuration digest
 
+### Requirement: Opt-in hashed runtime preset (`HashedRuntimeConfig`)
+The framework SHALL export an opt-in `HashedRuntimeConfig` subclass of
+`RuntimeConfig` binding `config_hash` to `FromHash("config_hash")` and defaulting
+`config_id` to `"{runtime.config_hash:coolname}"`, so projects adopting the
+conventional configuration identity avoid repeating marker boilerplate while bare
+`RuntimeConfig` remains hash-free.
+
+#### Scenario: Project uses HashedRuntimeConfig
+- **WHEN** a project uses `HashedRuntimeConfig` and declares a `config_hash`
+- **THEN** `runtime.config_hash` and `runtime.config_id` resolve without
+  project-side subclassing
+
+#### Scenario: Bare RuntimeConfig stays hash-free
+- **WHEN** a project uses bare `RuntimeConfig` with an empty hash registry
+- **THEN** no hash binding is imposed and resolution succeeds
+
 ### Requirement: Unmarked path guard
 The framework SHALL provide a guard enumerating path-typed fields that lack the
 portable-path marker, so a new path field cannot silently enter a behavioral
@@ -175,8 +204,11 @@ provide the helper that omits deferred knobs when building backend arguments.
 - **THEN** their resolved configurations and their digests differ
 
 #### Scenario: Deferred knobs are omitted
-- **WHEN** backend arguments are built from a block containing deferred knobs
-- **THEN** those knobs are absent from the arguments
+- **WHEN** `backend_kwargs(block)` builds backend arguments from a block
+  containing deferred knobs (default `mode="python"`, optional `mode="json"` and
+  `recursive=True`)
+- **THEN** deferred knobs are omitted while native Python types such as tuples
+  and `Path` survive intact by default
 
 ### Requirement: The authored configuration is recorded, not inferred
 The framework SHALL NOT rely on Pydantic's set-fields tracking to distinguish
@@ -198,10 +230,10 @@ block types, keeping all blocks at the top level.
 - **THEN** every block is a top-level field with no wrapper namespace
 
 ### Requirement: Output block and output leaf base types
-The framework SHALL export an output-block base type carrying a literal directory
-and a directory template, and an output-leaf base type carrying an enabled flag,
-a literal directory and a directory template. A project SHALL subclass either to
-add domain fields or to change a default.
+The framework SHALL export an output-block base type carrying an authorable
+`PortablePath` `dir` and a `DIRECTIVE`-marked `dir_template`, and an output-leaf
+base type carrying `enabled`, `dir`, and `DIRECTIVE`-marked `dir_template`. A
+project SHALL subclass either to add domain fields or change defaults.
 
 #### Scenario: Leaf template
 - **WHEN** an output leaf declares a directory template referencing a hash
@@ -211,6 +243,12 @@ add domain fields or to change a default.
 #### Scenario: Enabled leaf without a directory
 - **WHEN** an output leaf is enabled and its directory is null after resolution
 - **THEN** resolution refuses, naming the leaf
+
+#### Scenario: Directory template excluded from behavioral sources
+- **WHEN** two configurations differ only in `dir_template` on an `OutputBlock`
+  or `OutputLeaf`
+- **THEN** `dir_template` is excluded by its `DIRECTIVE` marker from behavioral
+  hashes and `behavioral` config comparison
 
 ### Requirement: Block-level extension
 The framework SHALL let a project substitute a subclass of a base block. Such a
@@ -227,14 +265,20 @@ and the walkers SHALL honor added marked fields.
 
 ### Requirement: Root-contract guard
 The framework SHALL provide a guard that verifies a project root contains the
-required base blocks — an experiment block, a runtime block, an output root, and
-at least one output block — and that each is the framework base type or a
-subclass. The guard SHALL NOT inspect fields beyond that; what a subclass does to
-inherited fields is the project's responsibility, documented rather than enforced.
+required base blocks — an experiment block, a runtime block, a `PathMarker`-
+annotated `output_root`, and at least one output block — and that each block is
+the framework base type or a subclass. The guard SHALL NOT police inherited fields
+on subclasses beyond that; subclass changes are the project's responsibility.
 
 #### Scenario: Missing base block
 - **WHEN** a root omits a required base block
 - **THEN** the guard fails at validation time
+
+#### Scenario: Unmarked output_root refused
+- **WHEN** a root declares `output_root` without `PathMarker` (such as bare `str`
+  or unmarked `Path`)
+- **THEN** `validate_root_contract` fails rather than letting `output_root` enter
+  behavioral digests
 
 #### Scenario: Subclass alters an inherited field
 - **WHEN** a project subclass removes, retypes or re-constrains an inherited field

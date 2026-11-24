@@ -26,19 +26,25 @@ distinct root source. A group file's package path is **static**, fixed by its
 location and `@package` header.
 
 **Config source** — one of the four mutually exclusive origins of a configuration:
-the default config name, an authored file, a prior run's resolved configuration, or
-a parent run to continue from.
+the default config name (`default`), an authored file (`file`), a prior run's
+resolved configuration (`resolved`), or a parent run to fork from (`fork`).
 
 **Replay** — reusing a prior run's *resolved* configuration, which carries a literal
-output directory and therefore lands in that same run. Contrast **continue**, which
-reuses a prior run's *composed* configuration and produces a new run with recorded
-lineage.
+output directory and therefore lands in that same run. Contrast **fork**, which
+reuses a prior run's *composed* configuration plus a verified parent artifact and
+produces a new run directory with recorded `parent` lineage.
+
+**CLI patterns** — opt-in terminal helpers (`honbu.cli`) and Typer option/command
+presets (`honbu.cli.presets`) that a project may import, customize, or skip while
+owning its own CLI surface. Honbu ships no forced dispatcher or mandatory flag
+names.
 
 ## Identity
 
 **Source** — the mapping a hash is taken over, projected into the configuration's
-own flat key namespace and carrying a `version`. Persisted beside its digest so the
-digest can be re-derived.
+own flat key namespace and carrying a `version` by default (`config_hash`
+conventionally omits one; `versioned=False` opts out). Persisted beside its digest
+so the digest can be re-derived.
 
 **Digest** — the bytes of a source through the frozen canonical encoder. Not an
 identity: a digest is what was computed, an identity is what a project chose to
@@ -54,9 +60,11 @@ like a path or a derived identity, but on different grounds — those are claims
 about where a value came from, this one about who reads it. The sweep block is the
 first (D28).
 
-**Deferred hash** — a hash declared as reading inputs, and therefore always computed
-after resolution rather than during it, whether or not its inputs happen to be
-present. Declared, not discovered, so the deferred set is the same on every machine.
+**Deferred hash** — a hash declared as reading inputs (`reads_inputs=True`), and
+therefore always computed after resolution rather than during it, whether or not
+its inputs happen to be present. Declared, not discovered, so the deferred set is
+the same on every machine. Cannot bind a `FromHash` config field; completed via
+`run.complete_hash()` and read via `run.hash()` / `run.hash_entry()`.
 
 **Fanned hash** — one declaration yielding one entry per key of a mapping or element
 of a sequence, addressed as `<name>.<key>`.
@@ -112,22 +120,27 @@ run. Index 1 lives at the unsuffixed `config/`; later indices at `config/<N>/`.
 
 ## Comparison and materialization
 
-**Operand** — one configuration entering a comparison, given as any of the sources
-composition already accepts, plus a run directory. Every operand normalizes to a
-composed mapping before comparison.
+**Operand** — one configuration entering a comparison: `default` (the default
+root), `file` (an authored file), `composed` (a prior run's `composed.yaml`), or
+`resolved` (a prior run's `resolved.yaml`), with optional per-operand overrides,
+`extra_dirs`, and `config_index`. Both `composed` and `resolved` accept a run
+directory directly. Every operand normalizes to a mapping before comparison.
 
-**Level** — which question a comparison asks. `literal` (every path), `authored`
-(resolved-only fields removed), `behavioral` (everything the markers exclude from
-behavioral sources removed), `by_hash` (differences attributed to declared hashes).
+**Level** — which question a comparison asks. `literal` (raw mappings as written),
+`authored` (schema-validated defaults with resolved-only fields removed),
+`behavioral` (schema-validated with marker-excluded fields removed), `by_hash`
+(evaluates all pure `reads_inputs=False` hashes for digests and source diffs,
+reporting `reads_inputs=True` hashes opaque).
 
 **Residual difference** — one that appears at `literal` and vanishes at
 `behavioral`: the configurations differ, but not in a way any behavioral source
 reads.
 
-**Opaque hash** — one whose source a project callable builds, so a difference can be
-neither attributed to it nor cleared of it statically. Reported as such rather than
-omitted, because "moves no identity" and "moves no identity I can see" support
-different decisions.
+**Opaque hash** — a declared input-reading hash (`reads_inputs=True`, such as a
+dataset scan or byte digest) that cannot be evaluated at config-compare time.
+Reported explicitly as opaque rather than omitted, while pure config-only
+`SourceHash` and `FannedHash` declarations (`reads_inputs=False`) are evaluated
+directly.
 
 **Packaged defaults** — a configuration tree shipped inside the installed project
 package, composed from when no local tree is present and shadowed per group by a
@@ -140,11 +153,13 @@ a group selection, or an authored file.
 taken from the compositor's own record of what it chose rather than by re-parsing
 defaults lists.
 
-**Scope** (materialization) — a project-named set of roots, and optionally packaged
-non-configuration resources. Honbu ships no scope names.
+**Scope** (materialization) — a project-named set of closure `roots`, optional
+verbatim config-tree `files`, and optional `exclude` globs. Configs only (no
+fixture datasets); Honbu ships no scope names.
 
 **Plan** — the classification of every file a materialization would touch as
-created, skipped, or overwritten. Reportable without writing.
+`create`, `skip`, or `overwrite` (exposed via `.created`, `.skipped`,
+`.overwritten` and `render_plan()`). Reportable without writing.
 
 ## Sweeps
 
@@ -175,9 +190,15 @@ axis values that produced it.
 children. Must be distinct across children, must depend only on the configuration
 rather than the invocation, and must appear in the child output template.
 
-**Sweep index** — the immutable record of prepared children written at preparation:
-coordinates, gate values, realized values, run directories. Reporting locates
-children through it and never scans directories.
+**Sweep index** — the accumulating record of prepared children written at
+preparation (`config/index.json`): coordinates, gate values, realized values,
+run directories, retired entries, and any cross-field-validator-skipped
+combinations. Reporting locates children through it and never scans directories.
+
+**Sweep output block (`SweepOutputBlock`)** — an opt-in `OutputBlock` preset
+(peer to run output blocks, not required by `validate_root_contract`) giving a
+sweep config-driven directory templating, `OutputLeaf` reporting leaves, and a
+persisted sweep `config/` bundle (`composed.yaml`, `resolved.yaml`, `index.json`).
 
 **Preparation** — expanding the matrix, resolving every child, checking the gate,
 and writing every child directory in the `initialized` state, running nothing.

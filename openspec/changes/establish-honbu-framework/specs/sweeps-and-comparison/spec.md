@@ -137,6 +137,30 @@ identically is indistinguishable from one the base set.
 - **THEN** preparation refuses, naming the path, because merging would give every
   child the union rather than the selected option
 
+### Requirement: Built-in group-axis composition
+`plan_sweep` and `prepare_sweep` SHALL accept optional `compose_spec` and
+`extra_dirs` to build per-child and group-shadow composition automatically —
+forwarding non-sweep overrides and translating nested dotted group paths to Hydra
+slash syntax (`a.b` → `a/b` and `~a/b`). `honbu.sweeps` SHALL also export
+`sweep_composers` and preserve explicit `compose_child` / `compose_without`
+callbacks as escape hatches.
+
+#### Scenario: Group axis forwards non-sweep overrides and extra dirs
+- **WHEN** `prepare_sweep` runs with `compose_spec`, `extra_dirs`, non-sweep
+  overrides, and a group axis
+- **THEN** every child composes with its selected group option plus all non-sweep
+  overrides and `extra_dirs`, and the group-shadow check runs automatically
+
+#### Scenario: Nested group path translates to slash syntax
+- **WHEN** a group axis targets a nested model path such as `model.head`
+- **THEN** group selection and shadow checking pass `model/head=<option>` and
+  `~model/head` to Hydra
+
+#### Scenario: Custom callback escape hatch
+- **WHEN** a caller composes from an external file or custom loader and passes
+  explicit `compose_child` / `compose_without` callbacks
+- **THEN** `plan_sweep` and `prepare_sweep` use those callbacks directly
+
 ### Requirement: Axis paths are validated against the schema and the configuration
 Every axis and covariant-axis path SHALL be validated at preparation, before any
 child is resolved, by two checks that catch different mistakes.
@@ -175,18 +199,11 @@ while reporting a sweep that merely found nothing.
 - **THEN** preparation refuses outright rather than preparing zero children
 
 ### Requirement: The sweep block is well-formed before it is expanded
-Three properties SHALL hold of a sweep block, checked at preparation:
-
-Every option of a covariant axis SHALL assign the same set of paths. An option
-omitting a path its siblings assign would silently inherit the base configuration's
-value, which is a hole wearing the shape of an axis.
-
-No path SHALL be claimed twice across the whole block — not by two axes, not by an
-axis and a covariant axis, not by two covariant axes. Two claims on one path mean
-one silently wins per child.
-
-A covariant axis SHALL declare at least two options. One option is a constant, not
-an axis, and belongs in the base configuration where it is visible.
+At preparation, every option of a covariant axis SHALL assign the same non-empty
+set of paths, no path SHALL be claimed twice across the block, a covariant axis
+SHALL declare at least two options, and an ordinary axis SHALL declare at least
+one value (refusing empty lists and empty nested mappings while allowing
+single-value ordinary axes for CLI pinning).
 
 #### Scenario: Ragged covariant options
 - **WHEN** one option of a covariant axis omits a path its siblings assign
@@ -199,6 +216,16 @@ an axis, and belongs in the base configuration where it is visible.
 #### Scenario: Single-option covariant axis
 - **WHEN** a covariant axis declares one option
 - **THEN** preparation refuses, directing the value to the base configuration
+
+#### Scenario: Empty ordinary axis or empty covariant option
+- **WHEN** an ordinary axis lists `[]`, an empty nested mapping, or a covariant
+  option assigns `{}`
+- **THEN** preparation refuses cleanly before expansion rather than producing zero
+  children
+
+#### Scenario: Single-value ordinary axis allowed
+- **WHEN** an ordinary axis lists a single value such as `sweep.axes.epochs=[10]`
+- **THEN** preparation accepts it as a length-1 dimension
 
 ### Requirement: An override may not contest a swept path
 An override addressing a path the sweep block sweeps SHALL be refused, directing
@@ -315,6 +342,13 @@ value to the template.
 #### Scenario: Identifier reached through a template
 - **WHEN** the declared identifier is a template-valued field
 - **THEN** it is checked after rendering, against the value that will be used
+
+#### Scenario: Unstable child output template
+- **WHEN** the declared gate is stable but the child output template also
+  references a fresh per-invocation token (such as `{runtime.run_id}` or
+  `{:timestamp}`)
+- **THEN** stability checking refuses before writing because re-preparation would
+  resolve children to new directories and orphan completed runs
 
 ### Requirement: The sweep block is declared by projects that sweep, and marked
 The sweep block SHALL NOT be a requirable block. Sweeping is not universal, and
@@ -526,9 +560,11 @@ repeat none. Deleting the progress zone SHALL NOT change what execution does.
 
 ### Requirement: Uniform child invocation
 Every prepared child SHALL be executable by identifying its run directory and
-requesting resume, regardless of whether it has ever started. This SHALL hold for
-any command shape, so that executing a sweep requires no sweep-specific entry point
-and an external scheduler can run children directly.
+requesting resume, regardless of whether it has ever started, across every
+resumable state. `execute_sweep` SHALL invoke children through a project-supplied
+runner callback, and any `child_argv` helper SHALL parameterize its flag spellings
+(defaulting to conventional `--resolved` and `--resume`) rather than assuming
+fixed project flags.
 
 #### Scenario: Never-started child
 - **WHEN** a child in the initialized state is invoked with resume
@@ -538,32 +574,71 @@ and an external scheduler can run children directly.
 - **WHEN** children are submitted independently by an external job scheduler
 - **THEN** each records its own state and the sweep's aggregate state stays correct
 
+#### Scenario: Custom project CLI flags
+- **WHEN** a project spells its resume/replay flags differently from the default
+  convention
+- **THEN** its runner callback or parameterized `child_argv` invokes children
+  using the project's own CLI grammar
+
+### Requirement: Sequential sweep execution policies
+`execute_sweep` SHALL support `on_error: Literal["stop", "continue"] = "stop"` so
+callers can opt into continuing past per-child exceptions (recording failures in
+`ExecutionResult.failed` while always propagating `KeyboardInterrupt` and
+`SystemExit`). `execute_sweep(..., only=...)` SHALL accept child indices or gate
+values and SHALL refuse unknown selectors rather than silently running zero
+children.
+
+#### Scenario: Continue past a single child failure
+- **WHEN** `execute_sweep(..., on_error="continue")` runs and one child raises an
+  exception
+- **THEN** remaining outstanding children still run, the failure is recorded in
+  `ExecutionResult.failed`, and the progress cache is refreshed
+
+#### Scenario: Interrupt always stops execution
+- **WHEN** `KeyboardInterrupt` occurs during `execute_sweep(..., on_error="continue")`
+- **THEN** the loop stops immediately, refreshes the progress cache, and
+  propagates the interrupt
+
+#### Scenario: Unknown selector in only is refused
+- **WHEN** `execute_sweep` is given an index or gate value not present among
+  active children
+- **THEN** it refuses naming the unknown selector
+
 ### Requirement: The sweep directory
-A sweep SHALL resolve its own output block, peer to a run's output blocks, holding
-the sweep index and sweep-level artifacts. Its configuration directory SHALL hold
-the sweep-level composed and resolved configurations and the index; sweep-level
-metrics, figures and promoted artifacts SHALL live in their own leaves.
+`honbu.sweeps` SHALL export an opt-in `SweepOutputBlock(OutputBlock)` preset (not
+required by `validate_root_contract`); its `dir_template` SHALL be refused if it
+references a swept axis path. `prepare_sweep` SHALL accept `sweep_target` (writing
+`composed.yaml`, `resolved.yaml`, `index.json` under `config/`) or explicit
+`sweep_dir` (writing `composed.yaml` and `index.json`). Reporting SHALL read from
+the index and track deleted active children separately from retired ones.
 
-The sweep index SHALL record, for each child, its coordinate, its declared
-identifier, its realized axis values, its run directory, and its configuration
-identity where one exists. Reporting SHALL locate children through the index and
-SHALL NOT discover them by scanning directories, so a child that was moved or
-removed is reported as missing rather than silently omitted.
+#### Scenario: Opt-in SweepOutputBlock resolves like an OutputBlock
+- **WHEN** a project declares a `SweepOutputBlock` (or subclass with `OutputLeaf`
+  reporting leaves) and prepares a sweep with `sweep_target`
+- **THEN** `sweep_outputs.dir` and its leaves anchor under `output_root`, and
+  `config/composed.yaml`, `config/resolved.yaml`, and `config/index.json` are
+  persisted
 
-Sweep-level reporting SHALL be disableable, and disabling it SHALL NOT prevent
-preparation or execution.
+#### Scenario: Sweep output template referencing a swept axis is refused
+- **WHEN** `sweep_outputs.dir_template` references a path varied by a sweep axis
+- **THEN** preparation refuses before writing anything
 
-#### Scenario: Index locates children
-- **WHEN** reporting runs
-- **THEN** every child is read at the location the index records
+#### Scenario: Explicit sweep_dir override
+- **WHEN** a caller passes `sweep_dir` directly without a `SweepOutputBlock`
+- **THEN** preparation writes `config/composed.yaml` and `config/index.json` into
+  that directory
 
-#### Scenario: Missing child
-- **WHEN** a recorded child's run directory no longer exists
-- **THEN** reporting names it as missing rather than omitting it
+#### Scenario: Missing active child versus deleted retired child
+- **WHEN** an active child's run directory is deleted
+- **THEN** `status.missing` reports it as missing, whereas deleting an already
+  retired child's directory is tracked separately (`status.retired_missing`) and
+  does not mark active counts incomplete
 
-#### Scenario: Reporting disabled
-- **WHEN** sweep-level reporting is disabled
-- **THEN** preparation and execution proceed and only collection is skipped
+#### Scenario: Reporting leaf disabled
+- **WHEN** a project disables a reporting `OutputLeaf` (`enabled=false`) on its
+  `SweepOutputBlock`
+- **THEN** preparation and execution proceed normally and reporting skips that
+  leaf
 
 ### Requirement: Sweep identity
 A sweep SHALL carry two distinct values, and they SHALL NOT be collapsed into one.
@@ -599,92 +674,114 @@ a sweep are attributable to it.
 - **THEN** the definition digest differs
 
 ### Requirement: Execution backends are adapters, not capabilities
-Sequential local execution SHALL require no optional dependency. Job submission
-and search-driven sweeping SHALL be provided as adapters over independent
-libraries declared as optional dependencies, and SHALL NOT be reached through the
-compositor's plugin interfaces.
-
-A search-driven sweep SHALL read its objective from a child's recorded best
-metrics rather than from a work function's return value, so that a proposal
-outlives the process that made it and a child evaluated hours later in a separate
-job can still report back.
+Sequential local execution SHALL require no optional dependency. External job
+submission (`submitit`) and search-driven sweeping (`optuna`) SHALL remain out of
+core dependencies and be delivered in separate follow-up changes as optional
+library adapters (never Hydra plugins) built over `child_argv` and each child's
+recorded `best.metrics`.
 
 #### Scenario: Local execution needs nothing extra
 - **WHEN** a sweep is executed locally and sequentially
 - **THEN** no optional dependency is required
 
-#### Scenario: Objective read from the record
-- **WHEN** a search-driven sweep evaluates a completed child
-- **THEN** the objective is read from that child's recorded best metrics
+#### Scenario: Child record preserves adapter seam
+- **WHEN** a prepared child completes via local or external execution
+- **THEN** its state and objective live in its own `manifest.json` (`best.metrics`),
+  requiring no driver-side state or work-function return value
 
-#### Scenario: Search state survives a restart
-- **WHEN** a search-driven sweep is stopped and resumed
-- **THEN** previously evaluated children are not re-proposed
-
-### Requirement: Declared objective
-A results block SHALL declare an objective — a metric key and a direction — used
-to rank runs; the framework SHALL rank generically without domain knowledge.
+### Requirement: Parameterized objective for ranking
+Ranking and comparison operations SHALL take an objective — a metric key and
+direction — as a caller-supplied parameter and read metric values from each run's
+recorded `best.metrics`, rather than requiring a framework results block.
 
 #### Scenario: Rank by objective
-- **WHEN** a set of completed runs is ranked
-- **THEN** the objective's metric and direction determine the order
+- **WHEN** a set of completed runs is ranked with a caller-supplied metric key
+  and direction
+- **THEN** the values in each run's `best.metrics` determine the order
 
-### Requirement: Parameter sweeps
-A sweep SHALL declare a base configuration, axes as configuration paths with
-values, a strategy, an output template, and an objective; the framework SHALL
-expand the axes, resolve each child, assign child identities, record a sweep
-index, and group results by configuration identity — without knowing what the
-project's work function trains.
+### Requirement: Project-rejected sweep combinations
+When an expanded combination fails a project-level cross-field model validator
+(`value_error`), `prepare_sweep` SHALL record it in `Preparation.skipped` and
+`config/index.json["skipped"]`, emit a warning, and continue preparing valid
+siblings (refusing if zero valid combinations remain). Field-level type, literal,
+or constraint typos SHALL still be refused outright. Re-preparing after fixing
+either the definition or validator SHALL leave existing children untouched.
 
-#### Scenario: Axis expansion
-- **WHEN** a sweep declares axes and a grid strategy
-- **THEN** one child run is resolved per combination and recorded in the index
+#### Scenario: Cross-field validator rejection skipped
+- **WHEN** an expanded combination fails a project `@model_validator`
+- **THEN** it is recorded in `Preparation.skipped` and `index.json["skipped"]`
+  with its reason while valid siblings are prepared
 
-#### Scenario: Invalid combination
-- **WHEN** an expanded combination fails strict validation
-- **THEN** it is recorded as skipped and preparation proceeds
+#### Scenario: Field-level axis value typo refused
+- **WHEN** an axis supplies a mistyped scalar or invalid literal value
+- **THEN** preparation refuses outright rather than silently skipping the typo
+
+#### Scenario: Zero valid combinations refused
+- **WHEN** every expanded combination is rejected by a cross-field validator
+- **THEN** preparation refuses before writing an empty sweep
+
+#### Scenario: Re-preparing after fixing a skipped entry
+- **WHEN** the user fixes the offending axis or validator and re-runs
+  `prepare_sweep` on the same sweep directory
+- **THEN** existing children stay untouched, newly valid children are written as
+  `initialized`, and `execute_sweep` runs only outstanding children
 
 ### Requirement: N-way run comparison
-Comparison SHALL check the gate hashes for the requested operation across a set
-of runs, report the residual configuration differences grouped by contributing
-hash source, and rank by the objective; a sweep's per-axis rollup and ad-hoc
-comparison SHALL use the same engine. The identity that gates comparison SHALL be
-named by the caller rather than assumed, since a project may declare none.
+`compare_runs` SHALL check caller-declared gate hashes across a set of runs,
+report N-way configuration differences (sharing `compare_configs`), and rank
+comparable runs by a caller-supplied objective reading each run's `best.metrics`.
+Incomplete runs or runs missing the objective metric SHALL be reported as unranked
+with their state and reason rather than aborting the comparison.
 
 #### Scenario: Not comparable
-- **WHEN** two runs differ on a hash that gates comparison
-- **THEN** the engine reports them as not comparable, naming the hash
+- **WHEN** two runs differ on a gate hash named by the caller
+- **THEN** the engine reports them as not comparable, naming the mismatched gate
 
-#### Scenario: Residual difference
-- **WHEN** two runs differ only in fields no behavioral hash reads
-- **THEN** the difference is reported as residual and behavioral identities stay equal
+#### Scenario: Incomplete run in a compared set
+- **WHEN** one run in a sweep or ad-hoc set failed or recorded no `best.metrics`
+- **THEN** completed runs are still compared and ranked, and the incomplete run is
+  listed as unranked with its state
 
 #### Scenario: No configuration identity declared
-- **WHEN** runs carry no configuration digest because the project declared none
-- **THEN** comparison reports the residual differences and gates on nothing
+- **WHEN** runs carry no configuration digest and no gates are requested
+- **THEN** comparison reports configuration differences and ranks on the objective
 
 ### Requirement: Version-aware reconciliation
-Comparison SHALL gate on per-hash recipe version, never the framework version.
-On a recipe-version difference it SHALL reconcile configuration identity by
-diffing the stored resolved configurations and domain identities by re-hashing
-stored source objects; when reconciliation is impossible it SHALL warn and
-proceed for advisory operations and refuse for operations that produce a fused
-artifact.
+Compatibility and run comparison SHALL gate on per-hash recipe version and
+`encoder_version`, never the framework version. On mismatch it SHALL reconcile
+encoder bumps by re-hashing stored sources, config identity by diffing stored
+resolved configurations, and key-compatible domain sources by comparing stored
+source dicts minus `version`. Unreconcilable mismatches SHALL warn and proceed by
+default (`on_unreconcilable="warn"`), and SHALL refuse when callers opt in to
+strict gating (`on_unreconcilable="refuse"`).
 
 #### Scenario: Minor bump stays comparable
 - **WHEN** two runs were produced under framework versions that left every
-  relevant hash recipe unchanged
+  relevant hash recipe and encoder version unchanged
 - **THEN** they compare with no version warning
 
-#### Scenario: Ensemble refuses on unreconcilable mismatch
-- **WHEN** an ensemble's gating identities cannot be reconciled across recipe
-  versions
-- **THEN** the ensemble is refused rather than produced
+#### Scenario: Encoder version bump reconciled from stored source
+- **WHEN** two runs differ only in `encoder_version` and carry stored sources
+- **THEN** re-hashing the stored sources under the current encoder reconciles them
 
-### Requirement: Ensemble assessment
-Ensemble assessment SHALL apply the stricter gate set, invoke a project-supplied
-combine work function, and assess the result against the objective.
+#### Scenario: Default warn vs opt-in strict refusal
+- **WHEN** gating identities have incompatible source shapes or missing sources
+- **THEN** `on_unreconcilable="warn"` (default) warns and proceeds, while
+  `on_unreconcilable="refuse"` raises a refusal naming the unreconcilable hash
 
-#### Scenario: Ensemblable set
-- **WHEN** a set passes the ensemble gate set
-- **THEN** the combine work function is invoked and the result is assessed by the objective
+### Requirement: Reusable run compatibility gating
+`check_run_compatibility` SHALL verify caller-declared gate hashes across a set of
+runs using the version-aware reconciliation model, returning a structured
+compatibility report (and refusing under `on_unreconcilable="refuse"` or gate
+mismatch when strict enforcement is requested). Projects SHALL own how compatible
+runs are combined (such as ensembling, merging, or distillation).
+
+#### Scenario: Strict compatibility gate for ensembling
+- **WHEN** a project checks runs before ensembling with strict gating enabled
+- **THEN** compatible runs pass and any gate or unreconcilable version mismatch is
+  refused naming the offending hash and runs
+
+#### Scenario: Advisory compatibility check
+- **WHEN** a project checks runs with default warning behavior
+- **THEN** mismatches and unreconcilable versions are reported in the structured
+  result with warnings rather than raising

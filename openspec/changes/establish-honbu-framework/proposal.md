@@ -25,12 +25,16 @@ foundation stays canonical by construction instead of by manual correction.
   - **Core**: canonical JSON, `hash_source`, deterministic
     human IDs, the strict-model base and field markers, marker walkers, atomic
     writes, output-path template rendering, collision validation.
-  - **Flow**: the `compose → resolve → collision-check → persist →
-    work → complete` command lifecycle, the dash-rule CLI grammar, the config
-    provenance bundle, and the run manifest.
-  - **Operations**: `sweeps`, `compare`, and `materialize` are direct public
-    package areas built on core/flow; they provide parameter sweeps, run
-    comparison, ensemble assessment, and configuration materialization.
+  - **Flow**: the pure-Python `compose → load → resolve → collision-check →
+    persist → work → complete` lifecycle, lifecycle-only command declarations,
+    the config provenance bundle, and the live run manifest — with zero CLI
+    parsing or hardcoded flag names.
+  - **Operations & CLI patterns**: `cli` (opt-in CLI helpers plus `honbu.cli.presets`
+    for Typer), `sweeps`, `compare`, and `materialize` are peer public package
+    areas built on core/flow; projects fully own their CLI design and import
+    whichever patterns fit without being forced to use them.
+    (`sweeps`, `compare`, and `materialize` provide parameter sweeps, config/run
+    comparison, compatibility gating, and configuration materialization.)
   - Composition and identity are **siblings** within this ordering, not stacked:
     neither depends on the other, and resolution is the first thing needing both.
 - Make **sweeps stoppable**: preparation resolves and materializes every child
@@ -54,9 +58,9 @@ foundation stays canonical by construction instead of by manual correction.
 - Define a **version-aware reconciliation model** for comparing runs produced
   under different framework versions: gate on per-hash recipe version (never the
   framework version); reconcile config identity by diffing stored resolved
-  configuration directly; reconcile domain identities from stored source
-  objects; degrade to a warning for advisory operations and refuse for
-  operations that produce fused artifacts.
+  configuration directly; reconcile encoder bumps and key-compatible domain
+  identities from stored source objects; err toward warning by default, with
+  explicit opt-in refusal for operations that produce fused artifacts.
 
 ## Scope
 
@@ -77,11 +81,14 @@ to model it.
 ### New Capabilities
 
 - `config-and-cli`: Hydra composition (search precedence, experiment-group
-  selection, mutually exclusive roots), the dash-rule override grammar, and the
-  installed command surface a project exposes.
-- `strict-schema`: the strict-model base, field markers and walkers, and the
+  selection, mutually exclusive `default` / `file` / `resolved` / `fork`
+  sources via a typed loader), bare-comma override refusal, and opt-in
+  importable CLI patterns (`honbu.cli` helpers and `honbu.cli.presets` for
+  Typer) while projects own their CLI surface.
+- `strict-schema`: the strict-model base, field markers and walkers, the
   project-assembles-from-framework-block-types composition model with
-  block-level extension and a root-contract guard.
+  block-level extension, an opt-in `HashedRuntimeConfig` preset, and a
+  root-contract guard.
 - `identity-and-hashing`: the frozen canonical encoder, the `version`-stamped
   bare-namespace source projections, deterministic human IDs, marker-driven
   exclusion, the four hash declaration forms, and the per-hash artifact.
@@ -92,23 +99,24 @@ to model it.
   resolution phase order, output-path templating and portable path resolution,
   scope-confined collision safety and resume, declared steps, the config
   provenance bundle, and the live run manifest with its invocation log.
-- `config-comparison`: N-way comparison of configurations of any kind — authored
-  file, default root with overrides, a prior run's composed or resolved form — at
-  four declared levels drawn from the field markers, with differences attributed to
-  the declared hashes they would move and callable-built hashes reported opaque
-  rather than silently cleared.
+- `config-comparison`: N-way comparison of configurations (`default`, `file`,
+  `composed`, `resolved`) at four declared levels (`literal`, `authored`,
+  `behavioral`, `by_hash`), normalizing schema defaults at schema-backed levels,
+  computing all pure `reads_inputs=False` hashes for exact digests and source
+  diffs, and reporting `reads_inputs=True` hashes as opaque.
 - `config-materialization`: packaged defaults usable before a local tree exists,
-  and materialization of a declared closure into a working tree — planned,
-  additive, never deleting — with divergence from the packaged original answered by
-  comparison rather than a lockfile.
+  configs-only materialization of a declared closure into a working tree —
+  planned, additive, never deleting — with divergence from the packaged original
+  answered by composed and file-level drift comparison rather than a lockfile.
 - `sweeps-and-comparison`: config-defined sweeps expanded by Honbu over the
   compositor's override parser rather than its multirun machinery — cartesian and
   paired axes, a declared child-distinguishing gate checked before anything is
   written, children indistinguishable from hand-run configurations, an immutable
   sweep index with its own output block, and sweep state derived from the
   children's manifests so execution is stoppable and resumable. Plus N-way run
-  comparison and ensemble assessment — one gate/diff/rank engine over the shared
-  identity family, with the version-aware reconciliation model.
+  comparison, objective ranking, and reusable run compatibility gating
+  (supporting ensembling, merging, and cross-run checks) with the version-aware
+  reconciliation model.
 
 ### Modified Capabilities
 
@@ -117,13 +125,15 @@ to model it.
 ## Impact
 
 - New repository `honbu` with the layered package above. Core dependencies carry
-  the compositor, so every install can compose, persist and run; the accepted cost
-  is an inherited exact pin on the compositor's parser runtime. Job submitters and
-  hyperparameter search engines stay optional.
+  the compositor and `typer` (replacing unused `rich`), so every install can
+  compose, persist, run, and import CLI presets without selecting an extra; the
+  accepted cost is an inherited exact pin on the compositor's parser runtime.
+  Job submitters and hyperparameter search engines stay optional.
 - The public package layout is a deliberate breaking surface:
-  `honbu.core`, `honbu.flow`, `honbu.sweeps`, `honbu.compare`, and
-  `honbu.materialize`. The old `honbu.mechanics` and `honbu.capabilities` paths
-  are removed rather than preserved as compatibility shims.
+  `honbu.core`, `honbu.flow`, `honbu.cli` (including `honbu.cli.presets`),
+  `honbu.sweeps`, `honbu.compare`, and `honbu.materialize`. The old
+  `honbu.mechanics` and `honbu.capabilities` paths are removed rather than
+  preserved as compatibility shims.
 - Downstream: `sati` and `dojo` adopt Honbu as a dependency and re-express their
   `config_loader`, schema base, hashing, and lifecycle modules in terms of it,
   keeping only their domain blocks, commands, backends, and results. Adoption

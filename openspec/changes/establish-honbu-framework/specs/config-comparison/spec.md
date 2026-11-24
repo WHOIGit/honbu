@@ -1,18 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Comparison operands are configuration references
-Comparison SHALL accept two or more operands, each a reference to a configuration
-of the same kinds the framework already composes from — the default root, an
-authored file, a prior run's composed or resolved configuration, or a run
-directory — and each SHALL accept its own overrides.
-
-Every operand SHALL be normalized to a composed mapping before comparison, so
-operands of different kinds are comparable. Comparing files before composition is
-what a text diff already does; the question comparison answers is what they mean
-once merged.
-
-An operand naming a run directory SHALL resolve to that run's recorded
-configuration without the caller having to know the bundle's layout.
+Comparison SHALL accept two or more operands referencing `default`, `file`,
+`composed` (a prior run's `composed.yaml`), or `resolved` (a prior run's
+`resolved.yaml`), each with optional `overrides`, `extra_dirs`, and `config_index`
+(defaulting to 1). Both `composed` and `resolved` SHALL accept either a file or a
+run directory, normalizing each operand to a mapping before comparison.
 
 #### Scenario: Mixed operand kinds
 - **WHEN** an authored file and a prior run's resolved configuration are compared
@@ -22,126 +15,113 @@ configuration without the caller having to know the bundle's layout.
 - **WHEN** the same source is given twice, the second with overrides
 - **THEN** the comparison reports exactly what the overrides changed
 
-#### Scenario: Run directory as an operand
-- **WHEN** an operand names a run directory
-- **THEN** its recorded configuration is located without a path into the bundle
+#### Scenario: Run directory and invocation config index
+- **WHEN** an operand names a run directory (optionally with `config_index=2`)
+- **THEN** its persisted `resolved.yaml` or `composed.yaml` is located without
+  naming internal bundle paths
+
+#### Scenario: Per-operand search directories
+- **WHEN** an operand supplies `extra_dirs`
+- **THEN** composition applies those directories when normalizing that operand
 
 #### Scenario: Group fragment
-- **WHEN** an operand names a configuration-group fragment that is not a whole
-  configuration
-- **THEN** it is comparable only at the literal level, because it cannot validate
+- **WHEN** an operand marks `fragment=True` for a configuration-group file
+- **THEN** it is comparable only at `literal`, because it cannot validate against
+  a root schema
 
-### Requirement: N-way comparison
+### Requirement: N-way comparison with exact value distinction
 Comparison SHALL support any number of operands, reporting one entry per differing
-path carrying each operand's value at that path, with absence distinguished from a
-null value. Two-operand comparison SHALL be the degenerate case of the same
-operation rather than a separate one.
+path carrying each operand's value. Absence (`ABSENT`) SHALL be distinguished from
+`None`, empty mappings (`{}`), and empty sequences (`[]`), and agreement SHALL be
+omitted. Equality semantics SHALL be consistent across differences and residuals.
 
-#### Scenario: Three configurations
-- **WHEN** three configurations are compared
-- **THEN** each differing path reports all three values
+#### Scenario: Three configurations with absence vs null
+- **WHEN** three configurations hold `None`, omit the key, and hold `2`
+- **THEN** all three values `(None, ABSENT, 2)` are reported
 
-#### Scenario: Present-and-null versus absent
-- **WHEN** one operand omits a path another sets to null
-- **THEN** the two are reported as differing
+#### Scenario: Empty container vs absent
+- **WHEN** one operand sets a mapping to `{}` (or a list to `[]`) and another
+  omits it
+- **THEN** the two are reported as differing rather than collapsing to absent
 
 #### Scenario: Agreement is not reported
 - **WHEN** every operand holds the same value at a path
 - **THEN** that path does not appear in the result
 
-### Requirement: Comparison levels
-Comparison SHALL be performed at a declared level, and the framework SHALL provide
-four:
+### Requirement: Comparison levels normalize defaults at schema-backed levels
+Comparison SHALL provide four declared levels: `literal` (raw mappings as
+written), `authored` (validated through `root_type` to normalize schema defaults,
+with resolved-only fields removed), `behavioral` (validated with all
+marker-excluded fields removed, including wildcard container paths), and `by_hash`
+(validated with pure hashes evaluated and differences attributed). Residual paths
+SHALL be paths differing at `literal` that vanish at `behavioral`.
 
-**literal** — every path. Answers "are these the same configuration".
+#### Scenario: Authored file compares cleanly against its resolved run
+- **WHEN** an authored configuration is compared to its run's `resolved.yaml` at
+  `authored` or `behavioral`
+- **THEN** schema defaults and resolved-only fields do not appear as spurious
+  differences
 
-**authored** — resolved-only fields removed. Answers "did a human write something
-different", so a replayed run compares cleanly against the file it came from.
+#### Scenario: Output location is residual, not behavioral
+- **WHEN** two configurations differ only in path-marked fields
+- **THEN** the difference appears at `literal` (and in `residual_paths`) and not
+  at `behavioral`
 
-**behavioral** — every field excluded from behavioral sources removed: portable
-paths, derived values, template-valued fields. Answers "would these compute
-differently", and is the same projection a digest sees.
+#### Scenario: Marker-excluded field inside a container with hyphenated keys
+- **WHEN** a marked field sits inside a mapping keyed by a hyphenated name
+- **THEN** wildcard exclusion matches it cleanly without error
 
-**by_hash** — differences attributed to the declared hashes they would move.
-Answers "which recorded identities change, and why".
-
-A **residual difference** SHALL be defined as one that appears at the literal level
-and disappears at the behavioral level. This is the definition run comparison uses,
-so the two SHALL share one implementation rather than deriving the notion twice.
-
-#### Scenario: Output location is not a behavioral difference
-- **WHEN** two configurations differ only in where they write
-- **THEN** the difference appears at the literal level and not at the behavioral one
-
-#### Scenario: Replay compares cleanly against its source
-- **WHEN** a run's resolved configuration is compared to the file it was composed
-  from at the authored level
-- **THEN** the assigned fields do not appear as differences
-
-#### Scenario: Residual difference is named as such
-- **WHEN** two configurations differ only in fields no behavioral source reads
-- **THEN** the differences are reported as residual
-
-### Requirement: Available levels follow from what the caller supplies
-The literal level SHALL require nothing but the operands. The authored and
-behavioral levels SHALL require the root type, since both are defined by field
-markers. The by_hash level SHALL additionally require the hash registry.
-
-Requesting a level whose inputs were not supplied SHALL be refused naming what is
-missing, rather than silently falling back to a weaker comparison — a comparison
-that quietly answered a different question than the one asked would be worse than
-no comparison.
+### Requirement: Available levels follow from caller-supplied inputs
+`literal` SHALL require only operands; `authored` and `behavioral` SHALL require
+`root_type`; `by_hash` SHALL require `root_type` and `hashes`, and SHALL refuse a
+missing `command` when the registry contains any command-scoped `FieldHash`.
+Requesting an unavailable level SHALL be refused naming what is missing, never
+silently downgraded.
 
 #### Scenario: Bare mappings
-- **WHEN** two mappings are compared with no schema
-- **THEN** the literal level is available and the others are refused
+- **WHEN** two mappings are compared with no `root_type`
+- **THEN** `literal` succeeds and `authored`, `behavioral`, and `by_hash` refuse
 
-#### Scenario: Missing registry
-- **WHEN** the by_hash level is requested without a hash registry
-- **THEN** it is refused naming the registry, not downgraded to behavioral
+#### Scenario: Missing registry or command
+- **WHEN** `by_hash` is requested without a hash registry, or without `command`
+  against a command-scoped `FieldHash`
+- **THEN** comparison refuses naming the missing input rather than reporting
+  empty hash attribution
 
-### Requirement: Hash attribution reports what it cannot know
-At the by_hash level each differing path SHALL be reported in one of three ways: as
-moving one or more named hashes; as moving none; or as excluded from every digest
-by a field marker.
+### Requirement: Pure hashes are evaluated and input-reading hashes are reported opaque
+At `by_hash`, comparison SHALL evaluate every declared pure hash
+(`reads_inputs=False` across `FieldHash`, `SourceHash`, and `FannedHash`) against
+each validated operand via `hashes.compute(..., input_reading=False)`, reporting
+per-hash digest equality, digests, and source differences alongside path
+attribution. Only input-reading declarations (`reads_inputs=True`, such as dataset
+scans or `ByteHash`) SHALL be reported as `opaque_hashes`.
 
-Independently, the result SHALL name the declared hashes whose sources are built by
-a project callable, because a callable's inputs are not statically knowable and an
-input-reading one cannot be run at comparison time at all. Such hashes SHALL be
-reported as **opaque** — neither implicated nor cleared — rather than omitted.
+#### Scenario: Pure SourceHash and FannedHash are evaluated directly
+- **WHEN** a registry declares `reads_inputs=False` `SourceHash` and `FannedHash`
+  identities (such as `model_config_hash`, `preprocessing_hash`, and per-head
+  hashes)
+- **THEN** `by_hash` computes their digests and source differences rather than
+  marking them opaque
 
-Reporting only the attributable hashes would imply a completeness the analysis does
-not have, and the difference matters: "this change moves no identity" and "this
-change moves no identity I can see" support different decisions.
+#### Scenario: Input-reading hash reported opaque
+- **WHEN** a registry declares a `reads_inputs=True` hash (such as `dataset_hash`
+  or a `ByteHash`)
+- **THEN** it is named in `opaque_hashes` rather than silently treated as equal
 
-#### Scenario: Difference attributed to a declared hash
-- **WHEN** a differing path falls within a field-selected hash's include set
-- **THEN** that hash is named as moved
+#### Scenario: Behavioral difference moving no declared hash
+- **WHEN** a differing behavioral path moves no declared hash
+- **THEN** it is still reported in `differences` with empty `moved_hashes`
 
-#### Scenario: Difference affects no declared identity
-- **WHEN** a differing path is in no include set
-- **THEN** it is reported as moving no hash
-
-#### Scenario: Difference is marker-excluded
-- **WHEN** a differing path carries a marker excluding it from behavioral sources
-- **THEN** it is reported as excluded from every digest
-
-#### Scenario: Callable-built hashes are reported opaque
-- **WHEN** a project declares a hash whose source a callable builds
-- **THEN** the result names it as opaque rather than treating it as unaffected
-
-### Requirement: Comparison returns data, and one renderer is provided
-Comparison SHALL return a structured result a project can render, sort or filter
-itself. The framework SHALL also provide a plain-text renderer, because otherwise
-every project writes the same one and they drift.
-
-The framework SHALL NOT prescribe a command surface for comparison; a project
-declares its own command and decides what its operands mean.
+### Requirement: Comparison returns structured data and a plain-text renderer
+Comparison SHALL return a structured `Comparison` result a project can render,
+sort, or filter itself, paired with a plain-text `render_comparison` renderer. The
+framework SHALL NOT prescribe a CLI command surface for comparison.
 
 #### Scenario: Project renders its own report
-- **WHEN** a project wants a different presentation
-- **THEN** it reads the structured result rather than parsing rendered text
+- **WHEN** a project wants a Rich table or JSON output
+- **THEN** it reads the structured `Comparison` object directly
 
 #### Scenario: Provided renderer
-- **WHEN** a project wants no opinion about presentation
-- **THEN** the provided renderer produces a readable report from the same result
+- **WHEN** a project wants a plain-text report
+- **THEN** `render_comparison` formats differences, hash summaries, residuals,
+  and opaque hashes cleanly

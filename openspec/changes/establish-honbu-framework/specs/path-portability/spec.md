@@ -31,7 +31,15 @@ platform is not mistaken for a relative reference on the other.
 
 #### Scenario: Cross-platform absolute path
 - **WHEN** a drive-rooted path recorded on Windows is read on POSIX
-- **THEN** it is treated as absolute rather than resolved against a parent
+- **THEN** it is treated as absolute by `is_absolute_uri`, Phase 2 input-path
+  resolution, `anchor()`, and `Run.artifact()` rather than resolved against a
+  parent
+
+#### Scenario: Portable paths inside containers are absolutized
+- **WHEN** a relative `PortablePath` lives inside a mapping or sequence (such as
+  `dict[str, Block]`, `list[Block]`, or `list[PortablePath]`)
+- **THEN** Phase 2 resolves it against the working directory just like top-level
+  input paths
 
 ### Requirement: Sanitized strings never carry identity
 No hash source SHALL derive from a sanitized path component. Path-derived

@@ -3,138 +3,140 @@
 ### Requirement: Packaged defaults are usable before a local tree exists
 A project SHALL be able to ship a committed configuration tree inside its
 installed package, and the framework SHALL compose from it when no local tree is
-present, so a freshly installed project runs before its user has authored
-anything. A local directory SHALL shadow the packaged one per group, so a checkout
-overrides a shipped default without editing it.
+present, so a freshly installed project runs before its user authors anything. A
+local directory SHALL shadow the packaged one per group.
 
 #### Scenario: Fresh install composes
 - **WHEN** a project with packaged defaults is invoked in a directory holding no
-  configuration
+  local configuration
 - **THEN** composition succeeds from the packaged tree
 
 #### Scenario: Local shadows packaged
 - **WHEN** a local group shares a name with a packaged one
 - **THEN** the local group is selected and unmentioned groups fall through
 
-### Requirement: Materialization copies the closure of declared roots
-Materialization SHALL copy packaged configuration into a local directory, starting
-from declared **roots** — a configuration name, a configuration-group selection, or
-an authored file — and including every packaged configuration those roots
-transitively reference.
+### Requirement: Materialization is configs-only and copies the closure of declared roots
+Materialization SHALL copy packaged configuration files only (never fixture
+datasets or non-configuration data assets), starting from declared **roots** —
+packaged configuration names with optional overrides, or an external authored
+file — and copying every packaged configuration those roots transitively select.
+Closures SHALL come from `hydra.runtime.choices`, excluding `hydra/*` internal
+groups and stripping `@package` suffixes before mapping groups to packaged paths.
 
-The closure SHALL be obtained from the compositor's own record of which group
-options it selected, not by re-parsing defaults lists. A second implementation of
-the compositor's selection rules would drift from the one that actually composes,
-and the drift would be silent: the copied tree would compose differently from the
-packaged one it was copied from.
+#### Scenario: Root and its transitive dependencies
+- **WHEN** a packaged root is materialized
+- **THEN** the root and every packaged group option it transitively selects are
+  copied
 
-The compositor's own internal groups SHALL be excluded from the closure.
+#### Scenario: Package-relocated group options resolve cleanly
+- **WHEN** a defaults list uses `@package` syntax (such as
+  `/backbone/torchvision@model.image_input.backbone: efficientnet_b0`)
+- **THEN** the `@package` suffix is stripped and `backbone/torchvision/efficientnet_b0.yaml`
+  is materialized
 
-#### Scenario: Root and its dependencies
-- **WHEN** a root is materialized
-- **THEN** the group options it selects are copied along with it
-
-#### Scenario: Transitively referenced options
-- **WHEN** a selected group option itself selects further options
-- **THEN** those are copied too
-
-#### Scenario: Framework-internal groups are not copied
+#### Scenario: Framework-internal groups are excluded
 - **WHEN** a closure is computed
-- **THEN** the compositor's own configuration groups are excluded
+- **THEN** `hydra/*` internal groups are excluded from the copy plan
 
 #### Scenario: An authored file as a root
-- **WHEN** an authored file outside the packaged tree is given as a root
-- **THEN** the packaged options it references are copied and the file itself is
-  left where it is
+- **WHEN** an external authored YAML file outside the packaged tree is given as
+  a root
+- **THEN** only the packaged options it transitively references are copied into
+  the local tree, and the authored file itself is left where it is
 
-### Requirement: Scopes are named by the project
-A project SHALL declare named **scopes**, each a set of materialization roots and
-optionally a set of packaged non-configuration resources. The framework SHALL ship
-no scope names, because which starters a project offers is entirely its own.
+### Requirement: Project-named scopes over closure roots and config-tree files
+A project SHALL declare named **scopes** via `MaterializationScope` holding
+closure `roots`, optional verbatim config-tree `files` (such as non-YAML config
+files or directories inside packaged defaults), and optional `exclude` globs.
+Honbu SHALL ship no scope names. Scopes SHALL be additive with project-declared
+defaults. Directory materialization SHALL exclude Python package plumbing
+(`__init__.py`, `__pycache__/`, `*.pyc`, `*.pyo`) by default.
 
-Scopes SHALL be additive, and a project SHALL be able to declare which apply when
-a caller names none.
-
-Non-configuration resources SHALL be materializable alongside configuration,
-because a starter configuration that points at a fixture dataset is only useful if
-the dataset arrives with it.
-
-#### Scenario: Scope selection
-- **WHEN** a caller names a scope
-- **THEN** that scope's roots and resources are materialized
-
-#### Scenario: Additive scopes
-- **WHEN** two scopes are named
-- **THEN** the union of their closures is materialized once, with no file copied
-  twice
+#### Scenario: Scope selection and additive union
+- **WHEN** one or more scopes are selected
+- **THEN** the union of their resolved config files is materialized once with no
+  duplicate copies
 
 #### Scenario: Default scopes
 - **WHEN** no scope is named
-- **THEN** the project's declared defaults apply
+- **THEN** the project's declared default scopes apply
 
-#### Scenario: Fixture resource
-- **WHEN** a scope declares a packaged resource directory
-- **THEN** it is materialized so the starter configuration resolves against
-  something that exists
+#### Scenario: Verbatim config-tree files and plumbing exclusions
+- **WHEN** a scope includes a directory or a non-YAML config file (such as a TOML
+  rendering style)
+- **THEN** those config files are materialized while `__init__.py`,
+  `__pycache__/`, `*.pyc`, `*.pyo`, and scope-excluded globs (such as
+  `AGENTS.md`) are skipped
 
-### Requirement: Materialization is planned, additive, and reversible in intent
-Materialization SHALL produce a **plan** classifying every file as created,
-skipped because it already exists, or overwritten, and SHALL be able to report the
-plan without writing.
-
-Writing SHALL be additive by default: an existing file SHALL be skipped, never
-silently replaced. Overwriting SHALL require an explicit instruction, and SHALL
-still be reported per file.
-
-The framework SHALL NOT delete a local file that the packaged tree no longer
-contains. Materialization adds; deciding that a local file is obsolete requires
-knowing whether a human edited it, which the framework cannot know.
+### Requirement: Materialization is planned, additive, and never deletes
+A unified `plan_materialization` SHALL derive the packaged root from
+`ComposeSpec` (with an optional override for unpacked test trees) and return a
+`MaterializationPlan` classifying each file as `create`, `skip`, or `overwrite`,
+exposing `.created`, `.skipped`, `.overwritten`, and a plain-text `render_plan`
+renderer. Applying a plan SHALL be additive by default, overwrite only when
+explicitly requested, and SHALL NOT delete local files absent from the package.
 
 #### Scenario: Dry run
-- **WHEN** a plan is requested without writing
-- **THEN** every action is reported and nothing is created
+- **WHEN** a plan is created and rendered without calling `apply_materialization`
+- **THEN** every `create`, `skip`, and `overwrite` action is reported and nothing
+  is written
 
-#### Scenario: Existing file is kept
-- **WHEN** materialization would write a file that already exists
-- **THEN** it is skipped and reported as skipped
+#### Scenario: Existing file is kept by default
+- **WHEN** materialization encounters an existing local file without overwrite
+- **THEN** it is classified and reported as `skip` and left untouched
 
 #### Scenario: Explicit overwrite
 - **WHEN** overwriting is requested
-- **THEN** existing files are replaced and each replacement is reported
+- **THEN** existing target files are classified as `overwrite` and replaced on
+  apply
 
-#### Scenario: Removed packaged file
-- **WHEN** the packaged tree no longer holds a file the local tree does
-- **THEN** the local file is left alone
+#### Scenario: Local-only files are preserved
+- **WHEN** a local config directory holds files not present in the packaged tree
+- **THEN** materialization leaves them untouched
 
-### Requirement: Materialization is a function, and a command is optional
-The framework SHALL expose materialization as functions a project calls from its
-own command, and MAY additionally offer registration of a ready-made command. It
-SHALL NOT reserve a command name, because the framework reserves no option that
-governs how much of a command's work runs and reserving a command name would be
-the same imposition by another route.
+### Requirement: Materialization is a library first, with an optional CLI builder
+The framework SHALL expose materialization as pure Python functions in
+`honbu.materialize`, and MAY offer an optional Typer command builder in
+`honbu.cli.presets`. It SHALL NOT reserve a command name.
 
-#### Scenario: Project declares its own command
-- **WHEN** a project wants its own name, flags and help for materialization
-- **THEN** it calls the functions from a command it declares
+#### Scenario: Project writes its own command
+- **WHEN** a project wants custom flags, layout, or extra dataset steps
+- **THEN** it calls `honbu.materialize` functions from its own CLI command
 
-#### Scenario: Ready-made registration
-- **WHEN** a project wants no opinion
-- **THEN** it registers the provided command and gets the scopes it declared
+#### Scenario: Ready-made Typer builder
+- **WHEN** a project wants a standard materialization command with no boilerplate
+- **THEN** it mounts the optional builder from `honbu.cli.presets` under any
+  command name it chooses
 
-### Requirement: A local tree can be compared against the packaged defaults
-The framework SHALL support comparing a materialized local configuration against
-the packaged configuration it was copied from, reporting what has diverged.
+### Requirement: Composed local-versus-packaged drift comparison
+`compare_materialized_config` SHALL compare the packaged-only configuration
+(composed with `ComposeSpec.local = None`) against the effective local
+configuration (local directory shadowing packaged defaults), accepting optional
+`overrides` and reusing `honbu.compare.compare_configs` across all four
+comparison levels (`literal`, `authored`, `behavioral`, `by_hash`). Partial local
+trees SHALL compare cleanly without requiring a full local copy.
 
-This SHALL reuse configuration comparison rather than introducing a separate
-mechanism, and it SHALL be the answer to whether a shipped default has moved since
-a tree was materialized — a question that otherwise has no answer, and which
-already has consequences: continuing a run reapplies schema defaults at
-continuation time, so a default that moved is silently picked up.
+#### Scenario: Partial local shadow compares cleanly
+- **WHEN** a local tree overrides only one group and relies on packaged
+  fallthrough for the rest
+- **THEN** `compare_materialized_config` succeeds and reports only the effective
+  differences
 
-#### Scenario: Diverged local file
-- **WHEN** a local configuration has been edited since it was materialized
-- **THEN** comparison reports how it differs from the packaged original
+#### Scenario: Non-default group checked via overrides
+- **WHEN** `compare_materialized_config` is given `overrides` selecting a
+  non-default group or experiment
+- **THEN** both packaged and local-shadowed sides compose with those overrides
+  and report behavioral or hash-attributed drift
 
-#### Scenario: Shipped default moved
-- **WHEN** a packaged configuration changed in a newer release
-- **THEN** comparison reports the difference against the local copy
+### Requirement: File-level tree drift reporting
+`materialized_file_drift` SHALL compare files across a local config directory
+against packaged defaults (applying package-plumbing and optional exclusions) and
+classify each path as `modified`, `unchanged`, `local_only`, or `packaged_only`,
+without a lockfile, paired with a plain-text `render_file_drift` renderer.
+
+#### Scenario: Post-upgrade file inventory
+- **WHEN** a user runs `materialized_file_drift` after editing local configs or
+  upgrading the package
+- **THEN** every differing file is reported as `modified`, identical files as
+  `unchanged`, custom local files as `local_only`, and unmaterialized packaged
+  files as `packaged_only`

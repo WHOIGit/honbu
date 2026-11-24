@@ -1,32 +1,24 @@
 ## ADDED Requirements
 
-### Requirement: Composition is a core capability, not an extra
-The compositor SHALL be a core dependency, so every install can compose, persist
-and run without selecting an extra, and no code path SHALL exist whose only purpose
-is to report a missing optional dependency at invocation time.
+### Requirement: Composition and CLI presets are core dependencies, not extras
+The compositor and Typer SHALL be core dependencies, while execution backends
+(job submitters, search engines) SHALL remain optional extras. Layer boundaries
+SHALL be enforced by test: `honbu.core` SHALL import no Hydra, OmegaConf, YAML,
+or Typer; `honbu.flow` and `honbu.cli` top-level SHALL import no Typer.
 
-Layers SHALL remain boundaries of *import* rather than of installation: a project
-opts out of a capability by not importing it. Because installation no longer
-enforces the boundary, the framework SHALL assert it instead — no module in the
-core layer SHALL import the compositor, its configuration library, or a YAML
-implementation, and this SHALL be verified by test rather than by convention.
-
-Genuine execution backends — job submitters, hyperparameter search engines — SHALL
-remain optional dependencies, because they are substitutable infrastructure the
-framework adapts to rather than capabilities it implements.
-
-#### Scenario: Fresh install composes
+#### Scenario: Fresh install composes and imports presets
 - **WHEN** the framework is installed with no extras selected
-- **THEN** composition, resolution, persistence and the run lifecycle all work
+- **THEN** composition, resolution, the run lifecycle, `honbu.cli`, and
+  `honbu.cli.presets` all work
 
-#### Scenario: Core stays independent of the compositor
-- **WHEN** a core-layer module is checked for its imports
-- **THEN** it imports no compositor, configuration library, or YAML implementation
+#### Scenario: Layering stays enforced by test
+- **WHEN** imports are checked across `honbu.core`, `honbu.flow`, and `honbu.cli`
+- **THEN** `honbu.core` imports no Hydra, OmegaConf, YAML, or Typer, and neither
+  `honbu.flow` nor `honbu.cli` top-level imports Typer
 
 #### Scenario: A launcher is absent
 - **WHEN** a project requests an execution backend whose package is not installed
-- **THEN** it is refused naming the extra to install, because that backend is
-  genuinely optional
+- **THEN** it is refused naming the extra to install
 
 ### Requirement: Hydra composition with defined precedence
 The framework SHALL compose configuration through the Hydra Compose API with a
@@ -48,8 +40,7 @@ directory SHALL be refused, listing them.
 #### Scenario: Primary directory outranks a fallback for the same group
 - **WHEN** an explicit directory holds a group of the same name as one in the
   primary directory, and does not itself carry the primary config
-- **THEN** the primary directory's group is selected, because the compositor ranks
-  its primary directory above every search-path fallback
+- **THEN** the primary directory's group is selected
 
 #### Scenario: Overlay carrying the primary config takes over
 - **WHEN** an explicit directory carries the primary config
@@ -69,36 +60,47 @@ distinct root source, and the framework SHALL NOT reserve any group name for
 promotion to the configuration root.
 
 #### Scenario: Group override against the default root
-- **WHEN** a command is invoked with a group selection and no explicit root
+- **WHEN** a command composes with a group selection and no explicit root
 - **THEN** the default root composes and the selection is applied as an override
 
 #### Scenario: No reserved group
 - **WHEN** a project promotes a group to the root by its own convention
 - **THEN** the framework treats its selection identically to any other override
 
-### Requirement: Declared configuration sources
-The framework SHALL define four mutually exclusive configuration sources — the
-default config name, an authored file, a prior run's resolved configuration given
-as a file or a run directory, and a parent run to continue from — and SHALL allow
-overrides on top of any of them. A command SHALL declare which sources it accepts;
-a command declaring none SHALL compose nothing.
+### Requirement: Declared configuration sources and typed loader
+The framework SHALL define four mutually exclusive configuration sources —
+`default` (the default config name), `file` (an authored file), `resolved` (a
+prior run's resolved configuration given as a file or run directory), and `fork`
+(a parent run to fork from) — and SHALL expose a typed `load_config` function in
+`honbu.flow` accepting overrides on top of any of them with no CLI coupling. A
+command SHALL declare which sources it accepts; a command declaring none SHALL
+compose nothing.
 
 #### Scenario: Conflicting sources
 - **WHEN** more than one configuration source is supplied
-- **THEN** composition fails naming the conflict
+- **THEN** source selection fails naming the conflict
 
 #### Scenario: Source the command does not accept
-- **WHEN** an augmenting command is invoked with a freshly composed root
+- **WHEN** an augmenting command is invoked with `default`
 - **THEN** it is refused, naming the sources it does accept
 
 #### Scenario: Command needing no configuration
 - **WHEN** a command declaring no configuration source runs
 - **THEN** no composition is attempted and a missing default root is not an error
 
+#### Scenario: Overrides on an authored file
+- **WHEN** an authored file is loaded with overrides
+- **THEN** the overrides apply to it as they would to the default root
+
+#### Scenario: Run directory names a prior configuration
+- **WHEN** a prior run is named by its directory for `resolved` or `fork`
+- **THEN** its persisted `resolved.yaml` or `composed.yaml` is located within it
+
 ### Requirement: Replaying a resolved configuration
-Replaying a resolved configuration SHALL use its literal output directories rather
-than re-rendering their templates, and the both-supplied refusal on a directory
-and its template SHALL NOT apply, because a replayed configuration is not authored.
+Replaying a `resolved` configuration SHALL use its literal output directories
+rather than re-rendering their templates, and the both-supplied refusal on a
+directory and its template SHALL NOT apply, because a replayed configuration is
+not authored.
 
 #### Scenario: Replay lands in the original directory
 - **WHEN** a run's resolved configuration is replayed without overrides
@@ -108,49 +110,45 @@ and its template SHALL NOT apply, because a replayed configuration is not author
 - **WHEN** a resolved configuration is replayed with overrides
 - **THEN** a new configuration index and invocation are recorded against the run
 
-### Requirement: Dash-rule token grammar
-Tokens containing an assignment and no leading dash SHALL be composition
-overrides. Dash-prefixed tokens SHALL be options, and an undeclared dash-prefixed
-token SHALL fail as a command error. Remaining bare tokens SHALL be positionals,
-matched against the command's declaration. Positionals SHALL reach the command and
-SHALL NOT assign configuration fields.
+### Requirement: Forking from a prior run
+Loading a `fork` source SHALL read the parent run's authored (`composed.yaml`)
+configuration, strip any resolved-only fields, apply overrides, and resolve a new
+run directory. Forking SHALL require a verified parent artifact recorded in the
+parent's manifest, selectable by artifact key at invocation time with an optional
+default declared on the command. The parent's other artifacts SHALL NOT be copied.
 
-#### Scenario: Mixed tokens
-- **WHEN** a caller supplies an override, an option, and a positional
-- **THEN** each is routed to composition, the command, and the command's
-  positionals respectively
+#### Scenario: Fork re-resolves input paths
+- **WHEN** a run is forked from a parent
+- **THEN** the parent's composed configuration is the base, so input paths
+  re-resolve against the forking machine rather than staying inherited absolute
 
-#### Scenario: Compositor override prefixes
-- **WHEN** an override uses an addition, forced-addition or deletion prefix
-- **THEN** it routes to composition unchanged
+#### Scenario: Fork discards resolved-only fields
+- **WHEN** a forked configuration carries a resolved-only field
+- **THEN** it is stripped before resolution so the child resolves its own
+  directory and identities
 
-#### Scenario: Option value is not mistaken for a positional
-- **WHEN** a value-taking option is given its value as a separate token
-- **THEN** that value is consumed by the option and not treated as a positional
+#### Scenario: Caller selects which parent artifact to fork from
+- **WHEN** a parent run registers multiple artifacts (such as `best_checkpoint`
+  and `last_checkpoint`) and the caller selects one
+- **THEN** lineage records both the chosen key and the artifact path, and an
+  unknown key is refused listing the parent's registered artifacts
 
-#### Scenario: Unknown option
-- **WHEN** a dash-prefixed token is neither a framework option nor declared by the
-  command
-- **THEN** the invocation fails as a command error
+#### Scenario: Fork without a declared or supplied artifact
+- **WHEN** a fork is attempted with neither a caller-supplied artifact key nor a
+  default `fork_artifact` on the command
+- **THEN** the fork is refused naming the missing artifact selection
 
-#### Scenario: Positional arity
-- **WHEN** a required positional is missing or an extra bare token is supplied
-- **THEN** the invocation fails naming the command's declared positionals
+#### Scenario: Parent artifacts are not copied
+- **WHEN** a run is forked
+- **THEN** only the lineage record is written; the parent's metrics, results, and
+  manifest remain in place
 
 ### Requirement: A bare top-level comma in an override is refused
 An override SHALL be refused when the compositor's grammar reads its value as a
 multi-value sweep — a comma sitting directly in the value rather than inside a
 collection literal or a quoted string — naming the sweep block as the place axes
-are declared. The framework SHALL NOT run compositor multirun.
-
-The two spellings differ by one character and mean opposite things: a bare comma
-requests one run per listed value, while a bracketed list is a single list-valued
-setting. Silently accepting the first would either discard every value but one or
-smuggle in an execution model the framework does not own.
-
-Commas that are structurally part of a value SHALL compose normally — collection
-literals, mapping literals, and quoted strings all contain commas that are not
-top-level.
+are declared. The framework SHALL NOT run compositor multirun. Commas inside
+collection literals, mapping literals, or quoted strings SHALL compose normally.
 
 #### Scenario: Bare comma on an ordinary path
 - **WHEN** an override supplies a bare comma-separated value for a configuration
@@ -166,102 +164,104 @@ top-level.
 - **WHEN** an override supplies a quoted value containing a comma
 - **THEN** it composes as one string
 
-### Requirement: A framework option applies only where the command's declaration implies it
-Each framework option's applicability SHALL be derived from what the command
-already declares, and an inapplicable option SHALL be refused at parse time naming
-why. Help SHALL be generated from the same derivation, so the option surface a
-command advertises and the one it accepts cannot differ.
+### Requirement: Projects own their CLI surface
+Projects SHALL fully own their CLI library, command tree, flag names, option
+types, help text, shell completion, and pre-open hooks. The framework SHALL NOT
+ship a mandatory CLI dispatcher, SHALL NOT embed CLI options or positionals on
+`CommandSpec`, and SHALL NOT hardcode CLI flag spellings inside `honbu.core` or
+`honbu.flow`. Refusal messages in `honbu.core` and `honbu.flow` SHALL use
+flag-agnostic wording by default and accept optional CLI hints.
 
-Applicability SHALL NOT be a separate per-command registration. Every framework
-option is already implied by an existing declaration — search directories apply
-where the command composes, permission to clear applies where the command declares
-something clearable, and resume applies where the command produces into a target —
-so a second declaration could only drift from the first.
+#### Scenario: Project keeps full Typer control
+- **WHEN** a project defines its commands in Typer with typed options, custom
+  positionals, and domain checks between `resolve` and `open_run`
+- **THEN** it calls `load_config`, `resolve`, and `open_run` directly with no
+  framework dispatcher or raw argv handoff
 
-The framework SHALL NOT reserve an option that decides how much of a command's
-work is performed. Which configuration is used, and whether the framework may
-write where it intends to, are settled before any project code runs and are the
-framework's to own; how far the work proceeds is the project's, and is expressed
-by declaring a command rather than by a framework flag.
+#### Scenario: Custom flag names in collision refusals
+- **WHEN** a project uses its own flag spellings and supplies a CLI hint
+- **THEN** target collision refusals report the project's flag spellings rather
+  than hardcoded framework flags
 
-#### Scenario: Clearing offered only where something is clearable
-- **WHEN** a command that writes nothing is given the clobber option
-- **THEN** it is refused, naming the command and why the option does not apply
-
-#### Scenario: Help matches the parser
-- **WHEN** a command's help omits an option
-- **THEN** supplying that option is refused rather than silently ignored
-
-#### Scenario: Project options are unaffected
-- **WHEN** a command declares its own options
-- **THEN** they are accepted alongside the applicable framework ones
-
-#### Scenario: No option governs how much work runs
+#### Scenario: No flag governs how much work runs
 - **WHEN** a project wants to prepare a run without working it
-- **THEN** it declares a command that does so, rather than passing a framework flag
+- **THEN** it declares a non-advancing command rather than relying on a reserved
+  framework flag
 
-### Requirement: Installed command surface
-The framework SHALL provide a command harness a project registers its
-subcommands with, threading each through composition, resolution and the run
-lifecycle, and exiting cleanly on a user-facing refusal. The harness SHALL derive
-its command tree, option surface and help text from the command declarations
-rather than from a second, parallel declaration in a CLI library.
+### Requirement: Opt-in library-agnostic CLI helpers (`honbu.cli`)
+The framework SHALL expose library-agnostic CLI pattern helpers in `honbu.cli`
+(without importing Typer): dash-rule override validation (`validate_override_tokens`
+and `split_dash_rule`), flag-name-independent source selection
+(`select_config_source`), clean refusal-versus-defect exit handling, warning
+emission, and documented conventional flag names (`--config`, `--resolved`,
+`--fork-from`, `--fork-artifact`, `--config-dir`, `--clobber`, `--resume`).
 
-#### Scenario: Refusal exit
-- **WHEN** a command raises a user-facing refusal
-- **THEN** the process prints the message and exits non-zero without a traceback
+#### Scenario: Dash-rule catches mistyped options in overrides
+- **WHEN** a dash-prefixed token lands in override tokens passed to
+  `validate_override_tokens`
+- **THEN** it is refused as an unknown option rather than forwarded to Hydra
 
-#### Scenario: Unexpected error is not swallowed
-- **WHEN** a command raises anything that is not a user-facing refusal
-- **THEN** the traceback is preserved, because it is a defect rather than a
-  message to the user
+#### Scenario: Compositor override prefixes pass validation
+- **WHEN** override tokens use `+`, `++`, or `~` prefixes
+- **THEN** they route to composition unchanged
 
-#### Scenario: Help from the declaration
-- **WHEN** help is requested for a command
-- **THEN** its positionals, options and accepted configuration sources are listed
-  from its declaration
+#### Scenario: Refusal exit preserves defect tracebacks
+- **WHEN** a command raises a `HonbuError` refusal under the refusal exit helper
+- **THEN** the message is printed and the process exits non-zero without a
+  traceback, while any unexpected exception preserves its traceback
 
-#### Scenario: Longest command path wins
-- **WHEN** a registered command's name has more segments than another's prefix
-- **THEN** the longer path is dispatched
+#### Scenario: Structured error hook
+- **WHEN** a command supplies an error formatter (for example under `--format json`)
+- **THEN** refusals can be rendered in that format instead of plain stderr text
 
-#### Scenario: Project keeps its own CLI library
-- **WHEN** a project prefers to own argument parsing
-- **THEN** it can invoke one command's full flow directly with the remaining
-  tokens, without the framework's dispatcher
+#### Scenario: Source selection is independent of flag spelling
+- **WHEN** a project parses `--resolved-config` or a positional `<run_dir>` and
+  passes the value to `select_config_source`
+- **THEN** mutual exclusivity and command-accepted sources are enforced identically
 
-### Requirement: Configuration sources are loaded by the harness
-The harness SHALL load whichever configuration source the invocation selected —
-the default root, an authored file, a prior run's resolved configuration, or a
-parent run to continue from — and SHALL apply overrides on top of any of them. A
-prior run MAY be named by its directory rather than its file. Continuing SHALL
-record the parent's identity and the artifact continued from, which the command
-declares.
+### Requirement: Opt-in Typer presets (`honbu.cli.presets`)
+The framework SHALL provide opt-in Typer presets in `honbu.cli.presets`: Hydra
+context settings, ready-made `Annotated` option aliases for the conventional
+flags, customizable option factories so projects can override flag names or help
+text, and optional mountable Typer command builders. Importing presets SHALL be
+entirely optional.
 
-#### Scenario: Overrides on an authored file
-- **WHEN** an authored root file is supplied with overrides
-- **THEN** the overrides apply to it as they would to the default root
+#### Scenario: One-line adoption of conventional Typer options
+- **WHEN** a project imports option aliases from `honbu.cli.presets`
+- **THEN** its commands share consistent flag names, types, and help text while
+  retaining full Typer validation, rich help, and shell completion
 
-#### Scenario: Run directory names a prior configuration
-- **WHEN** a prior run is named by its directory
-- **THEN** its persisted resolved configuration is located within it
+#### Scenario: Customized flag spelling via factory
+- **WHEN** a project uses an option factory to rename a flag or customize help
+- **THEN** it keeps the preset's type and behavior under its own CLI spelling
 
-#### Scenario: Continuing builds on the authored configuration
-- **WHEN** a run is continued from a parent
-- **THEN** the parent's composed configuration is the base, so its input paths
-  re-resolve against the continuing machine rather than being inherited absolute
+#### Scenario: Project skips Typer presets
+- **WHEN** a project uses Click, `argparse`, or hand-written Typer options
+- **THEN** it never imports `honbu.cli.presets` and all of `honbu.core`,
+  `honbu.flow`, and `honbu.cli` work identically
 
-#### Scenario: Continuing discards the parent's resolved-only values
-- **WHEN** a continued configuration carries a resolved-only field
-- **THEN** it is stripped before resolution, so the child resolves its own
-  directory and identities rather than inheriting them
+### Requirement: Passive ProjectSpec bundle and curated top-level exports
+`honbu.flow` SHALL export a passive frozen `ProjectSpec` dataclass bundling
+`root_type`, `compose_spec`, `hashes`, `templates`, and `config_hash_name` (running
+root-contract and identity-field validation at construction with zero CLI or IoC
+coupling), accepted across `flow`, `sweeps`, `compare`, `materialize`, and
+`cli.presets` alongside individual kwargs. Top-level `honbu` SHALL export only the
+everyday schema, marker, hash, and error surface, keeping low-level helpers in
+`honbu.core.*`.
 
-#### Scenario: The parent's other artifacts are not copied
-- **WHEN** a run is continued
-- **THEN** only the lineage record is written, and the parent's metrics, results
-  and manifest stay where they are
+#### Scenario: Project constructs ProjectSpec once at import
+- **WHEN** a project defines `PROJECT = ProjectSpec(root_type=RootConfig, compose_spec=SPEC, hashes=HASHES)`
+- **THEN** `validate_root_contract` and `validate_identity_fields` run at import
+  and callers can pass `project=PROJECT` across `load_config`, `resolve`,
+  `open_run`, `compare_configs`, `prepare_sweep`, `plan_materialization`, and
+  `cli.presets` without repeating shared arguments
 
-#### Scenario: Continuing declares its artifact
-- **WHEN** a command accepts the continue source but names no artifact to continue
-  from
-- **THEN** registration fails
+#### Scenario: Direct kwargs still work without ProjectSpec
+- **WHEN** a caller or test invokes `resolve`, `open_run`, or peer operations
+  passing `root_type` and `hashes` directly without a `ProjectSpec`
+- **THEN** every function continues to work identically
+
+#### Scenario: Curated top-level namespace
+- **WHEN** a user imports from top-level `honbu`
+- **THEN** everyday schema, marker, hash, and error types are available directly
+  while internal walker, target-clearing, and IO plumbing remain in `honbu.core.*`
