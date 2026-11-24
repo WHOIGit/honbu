@@ -1,3 +1,7 @@
+## Purpose
+
+Defines cross-platform path portability rules: union POSIX/Windows component sanitization with explicit warnings, cross-syntax absolute reference recognition, container path absolutization, separation of sanitization from identity, and pre-write path-length budget enforcement.
+
 ## ADDED Requirements
 
 ### Requirement: One sanitization rule for every platform

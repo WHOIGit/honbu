@@ -1,4 +1,10 @@
-## ADDED Requirements
+# config-comparison Specification
+
+## Purpose
+
+Defines schema-aware N-way comparison of configuration operands (`default`, `file`, `composed`, `resolved`) across `literal`, `authored`, `behavioral`, and `by_hash` levels, with exact absence-versus-null distinction, pure hash evaluation, and plain-text rendering.
+
+## Requirements
 
 ### Requirement: Comparison operands are configuration references
 Comparison SHALL accept two or more operands referencing `default`, `file`,

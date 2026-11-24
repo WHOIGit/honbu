@@ -1,4 +1,10 @@
-## ADDED Requirements
+# config-materialization Specification
+
+## Purpose
+
+Defines configs-only materialization of packaged Hydra defaults into a working directory using compositor dependency closures, project-named scopes, additive non-deleting plans, and composed plus file-level local-versus-packaged drift reporting.
+
+## Requirements
 
 ### Requirement: Packaged defaults are usable before a local tree exists
 A project SHALL be able to ship a committed configuration tree inside its

@@ -1,10 +1,15 @@
+## Purpose
+
+Defines Hydra configuration composition with search-path precedence, typed configuration-source loading (`default`, `file`, `resolved`, `fork`), bare-comma override refusal, passive `ProjectSpec` bundling, curated top-level exports, and opt-in CLI helpers (`honbu.cli`) and Typer presets (`honbu.cli.presets`) while projects own their CLI surface.
+
 ## ADDED Requirements
 
 ### Requirement: Composition and CLI presets are core dependencies, not extras
-The compositor and Typer SHALL be core dependencies, while execution backends
-(job submitters, search engines) SHALL remain optional extras. Layer boundaries
-SHALL be enforced by test: `honbu.core` SHALL import no Hydra, OmegaConf, YAML,
-or Typer; `honbu.flow` and `honbu.cli` top-level SHALL import no Typer.
+The compositor and Typer SHALL be core dependencies, while optional
+execution-backend packages (such as `submitit` and `optuna`) SHALL remain outside
+core dependencies. Layer boundaries SHALL be enforced by test: `honbu.core` SHALL
+import no Hydra, OmegaConf, YAML, or Typer; `honbu.flow` and `honbu.cli`
+top-level SHALL import no Typer.
 
 #### Scenario: Fresh install composes and imports presets
 - **WHEN** the framework is installed with no extras selected
@@ -15,10 +20,6 @@ or Typer; `honbu.flow` and `honbu.cli` top-level SHALL import no Typer.
 - **WHEN** imports are checked across `honbu.core`, `honbu.flow`, and `honbu.cli`
 - **THEN** `honbu.core` imports no Hydra, OmegaConf, YAML, or Typer, and neither
   `honbu.flow` nor `honbu.cli` top-level imports Typer
-
-#### Scenario: A launcher is absent
-- **WHEN** a project requests an execution backend whose package is not installed
-- **THEN** it is refused naming the extra to install
 
 ### Requirement: Hydra composition with defined precedence
 The framework SHALL compose configuration through the Hydra Compose API with a

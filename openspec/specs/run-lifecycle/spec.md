@@ -1,4 +1,10 @@
-## ADDED Requirements
+# run-lifecycle Specification
+
+## Purpose
+
+Defines the command-driven run lifecycle: lifecycle-only command declarations, fixed-order side-effect-free resolution, pure output-path templating, portable and absolute resolved views, scope-confined collision safety, declared steps and resumability, atomic provenance bundles, forked run lineage, and the single-writer live run manifest.
+
+## Requirements
 
 ### Requirement: Declared commands own their write scope
 A project SHALL declare each command with lifecycle and schema metadata only — a

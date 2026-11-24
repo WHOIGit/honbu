@@ -1,3 +1,7 @@
+## Purpose
+
+Defines the strict Pydantic configuration model base, field markers and container-aware walkers, explicit backend-default deferral, flat project-assembled root schemas with base block extension, opt-in `HashedRuntimeConfig`, and the root-contract guard.
+
 ## ADDED Requirements
 
 ### Requirement: Strict model base

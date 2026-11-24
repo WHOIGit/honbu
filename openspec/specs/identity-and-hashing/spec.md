@@ -1,4 +1,10 @@
-## ADDED Requirements
+# identity-and-hashing Specification
+
+## Purpose
+
+Defines Honbu's content-addressed identity foundation: frozen canonical JSON encoding, marker-driven behavioral field exclusion, the four hash declaration forms (`FieldHash`, `SourceHash`, `ByteHash`, `FannedHash`), declared deferral, per-hash artifacts, and thread-safe deterministic and fresh human-readable identities.
+
+## Requirements
 
 ### Requirement: Frozen canonical encoding
 The framework SHALL hash a source object as SHA-256 over one canonical JSON

@@ -1,3 +1,7 @@
+## Purpose
+
+Defines config-driven parameter sweeps (ordinary, group, and covariant axes, child-distinguishing gates, extensible sweep directories with `SweepOutputBlock`, manifest-derived stoppable sequential execution) and manifest-backed N-way run comparison, version-aware hash reconciliation, objective ranking, and reusable run compatibility gating.
+
 ## ADDED Requirements
 
 ### Requirement: The sweep block is the single sweep definition
@@ -314,8 +318,9 @@ that neither will overwrite the other. The template rule is what usually makes t
 second follow from the first; the directory check is what happens when it does not.
 
 A refusal SHALL name the colliding children and the axes that failed to
-distinguish them, and SHALL suggest adding the child index or a realized axis
-value to the template.
+distinguish them, and SHALL direct the caller either to widen what the gate reads
+so it covers those axes or to choose a gate path that varies across every
+colliding axis.
 
 #### Scenario: Colliding identifiers
 - **WHEN** two expanded children resolve to the same declared identifier
@@ -444,11 +449,6 @@ untouched rather than clearing it.
 A producing command SHALL refuse an active sweep block, directing the caller to
 preparation, so that one command has one target.
 
-#### Scenario: Prepared but not run
-- **WHEN** a sweep is prepared
-- **THEN** every child holds its composed configuration, resolved configuration and
-  resolved hashes, and every child's state is initialized
-
 A sweep SHALL be extensible in place. Re-preparing a sweep whose definition has
 grown SHALL add the children it gained and change nothing else — the same
 relationship an augmenting command has to a run, where adding an evaluation extends
@@ -465,6 +465,11 @@ kept and marked as outside the current definition, because a completed child hol
 results, and an index that stopped mentioning it would leave the directory on disk
 and unreferenced — the silent omission the index exists to prevent. Restoring the
 value SHALL restore the entry rather than prepare a second child.
+
+#### Scenario: Prepared but not run
+- **WHEN** a sweep is prepared
+- **THEN** every child holds its composed configuration, resolved configuration and
+  resolved hashes, and every child's state is initialized
 
 #### Scenario: Re-preparing an existing sweep
 - **WHEN** preparation runs again over a sweep whose children exist
@@ -675,10 +680,10 @@ a sweep are attributable to it.
 
 ### Requirement: Execution backends are adapters, not capabilities
 Sequential local execution SHALL require no optional dependency. External job
-submission (`submitit`) and search-driven sweeping (`optuna`) SHALL remain out of
-core dependencies and be delivered in separate follow-up changes as optional
-library adapters (never Hydra plugins) built over `child_argv` and each child's
-recorded `best.metrics`.
+submission and search-driven sweeping packages SHALL remain out of core
+dependencies; prepared children SHALL expose uniform invocation arguments
+(`child_argv`) and persist their own state and `best.metrics` in `manifest.json`
+so external launchers can run them with no driver-side state.
 
 #### Scenario: Local execution needs nothing extra
 - **WHEN** a sweep is executed locally and sequentially
