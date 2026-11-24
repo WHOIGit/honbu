@@ -37,6 +37,10 @@ def normalize_axes(axes: Mapping[str, Any]) -> dict[str, list[Any]]:
     flat: dict[str, list[Any]] = {}
 
     def walk(node: Mapping[str, Any], prefix: str) -> None:
+        if prefix and not node:
+            raise RefusalError(
+                f"axis {prefix!r} is an empty mapping; list at least one value or remove it"
+            )
         for key, value in node.items():
             path = f"{prefix}.{key}" if prefix else str(key)
             if isinstance(value, Mapping):
@@ -48,9 +52,15 @@ def normalize_axes(axes: Mapping[str, Any]) -> dict[str, list[Any]]:
                     f"{type(value).__name__}. A single value belongs in the base "
                     f"configuration, and a sweep of one is not a sweep."
                 )
+            values_list = list(value)
+            if not values_list:
+                raise RefusalError(
+                    f"axis {path!r} lists no values; supply at least one value or "
+                    f"remove the axis"
+                )
             if path in flat:
                 raise RefusalError(f"axis {path!r} is declared twice")
-            flat[path] = list(value)
+            flat[path] = values_list
 
     walk(axes, "")
     return flat
@@ -133,6 +143,11 @@ def _flatten_option(
     flat: dict[str, Any] = {}
 
     def walk(node: Mapping[str, Any], prefix: str) -> None:
+        if prefix and not node:
+            raise RefusalError(
+                f"option {position} of covariant axis {label!r} has an empty mapping at "
+                f"{prefix!r}; each option must assign concrete path values"
+            )
         for key, value in node.items():
             path = f"{prefix}.{key}" if prefix else str(key)
             if isinstance(value, Mapping):
@@ -146,6 +161,11 @@ def _flatten_option(
             flat[path] = value
 
     walk(option, "")
+    if not flat:
+        raise RefusalError(
+            f"option {position} of covariant axis {label!r} assigns no paths; "
+            f"each option must assign at least one path"
+        )
     return flat
 
 

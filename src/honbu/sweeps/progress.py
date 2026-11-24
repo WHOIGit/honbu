@@ -13,17 +13,6 @@ deliberately one:
   accumulating, permanent.
 * ``manifest.json`` — the progress **cache**. Rebuildable by rescanning, deletable
   without consequence, and stamped with when it was last refreshed.
-
-A run's manifest keeps its state and its index together because one writer owns
-both, and splitting them would let them disagree. Here the opposite holds: the
-index and the progress have different writers and different trust levels, and
-putting a cache inside a permanent record is an invitation to trust it.
-
-The cache earns its place by being readable without running anything — ``cat`` the
-file and see 8/12. It pays for that with a stale-read hazard that has to be visible
-rather than papered over: a child run by a scheduler array updates its own manifest
-and nothing else, so a count with no timestamp would assert a currency it does not
-have. Hence the refresh time, and hence anything that reports refreshes first.
 """
 
 from __future__ import annotations
@@ -32,19 +21,20 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from honbu.sweeps.prepare import read_sweep_index
 from honbu.core.io import atomic_write_json, read_json
 from honbu.core.targets import MANIFEST_NAME, RESUMABLE_STATES
+from honbu.errors import RefusalError
+from honbu.sweeps.prepare import read_sweep_index
 
 #: The sweep's progress cache, beside its ``config/`` rather than inside it.
 SWEEP_MANIFEST_NAME = "manifest.json"
 
-#: What a child's state is when its run directory is not there. Deliberately not
-#: None-as-absence: a missing child is a *finding*, and reporting says so rather
-#: than leaving it out of a total that then looks complete.
+#: What a child's state is when its run directory is not there.
 MISSING = "missing"
+
+ErrorPolicy = Literal["stop", "continue"]
 
 
 def _now() -> str:
@@ -70,13 +60,7 @@ class ChildStatus:
 
     @property
     def resumable(self) -> bool:
-        """Whether an execution pass should pick this child up.
-
-        The existing run vocabulary is already exactly right, so there is none to
-        add: ``completed`` is skipped and everything else is resumed. ``running``
-        being resumable is what covers a scheduler timeout, where the child was
-        killed without getting to record anything.
-        """
+        """Whether an execution pass should pick this child up."""
         return self.state in RESUMABLE_STATES
 
     def as_entry(self) -> dict[str, Any]:
@@ -119,11 +103,17 @@ class SweepStatus:
 
     @property
     def missing(self) -> tuple[ChildStatus, ...]:
-        return tuple(c for c in self.children if c.missing)
+        """Active (in-definition) children whose run directory is missing."""
+        return tuple(c for c in self.current if c.missing)
 
     @property
     def retired(self) -> tuple[ChildStatus, ...]:
         return tuple(c for c in self.children if not c.in_definition)
+
+    @property
+    def retired_missing(self) -> tuple[ChildStatus, ...]:
+        """Retired children whose run directory is missing, tracked separately."""
+        return tuple(c for c in self.retired if c.missing)
 
     def counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -167,13 +157,7 @@ def _read_child(entry: Mapping[str, Any]) -> ChildStatus:
 
 
 def scan_sweep(sweep_dir: Path) -> SweepStatus:
-    """Rebuild a sweep's whole state from the index and the children.
-
-    Children are located through the index and never by scanning directories, so a
-    child that was moved or deleted is reported missing rather than silently
-    omitted. Scanning would find the survivors and report a smaller sweep that
-    looked complete.
-    """
+    """Rebuild a sweep's whole state from the index and the children."""
     index = read_sweep_index(sweep_dir)
     return SweepStatus(
         sweep_id=str(index.get("sweep_id", "")),
@@ -186,12 +170,7 @@ def scan_sweep(sweep_dir: Path) -> SweepStatus:
 
 
 def write_progress(status: SweepStatus) -> Path:
-    """Persist the cache, stamped with when it was taken.
-
-    The stamp is not decoration. Without it the file states a count as though it
-    were current, and it is stale precisely when it matters most — while a scheduler
-    is running the children and updating nothing but their own manifests.
-    """
+    """Persist the cache, stamped with when it was taken."""
     path = status.sweep_dir / SWEEP_MANIFEST_NAME
     atomic_write_json(
         path,
@@ -208,11 +187,7 @@ def write_progress(status: SweepStatus) -> Path:
 
 
 def read_progress(sweep_dir: Path) -> dict[str, Any] | None:
-    """The cache exactly as it sits on disk, stale or not, or None if absent.
-
-    For looking at the file, not for deciding anything. Everything that acts calls
-    :func:`refresh_sweep`.
-    """
+    """The cache exactly as it sits on disk, stale or not, or None if absent."""
     path = Path(sweep_dir) / SWEEP_MANIFEST_NAME
     if not path.is_file():
         return None
@@ -230,64 +205,109 @@ def refresh_sweep(sweep_dir: Path) -> SweepStatus:
 # --- execution ---------------------------------------------------------------
 
 #: Runs one child. Given its status, it must make that child's run happen — in
-#: process, as a subprocess, or as a submitted job. Honbu supplies the argv.
+#: process, as a subprocess, or as a submitted job.
 RunChild = Callable[[ChildStatus], Any]
 
 
-def child_argv(child: ChildStatus) -> list[str]:
-    """The one call that runs any child, whatever state it is in.
+def child_argv(
+    child: ChildStatus,
+    *,
+    resolved_flag: str = "--resolved",
+    resume_flag: str = "--resume",
+) -> list[str]:
+    """Uniform resume invocation for one child, with parameterized flag spellings."""
+    return [resolved_flag, str(child.run_dir), resume_flag]
 
-    A child that never started and a child that died at epoch forty are the same
-    invocation. That uniformity is why a driver can be a ``for`` loop, and why a
-    scheduler array over the child directories needs no glue: there is nothing to
-    decide per child, so there is nothing for a driver to remember.
-    """
-    return ["--resolved", str(child.run_dir), "--resume"]
+
+@dataclass(frozen=True)
+class FailedChild:
+    """One child whose runner callback raised under ``on_error='continue'``."""
+
+    child: ChildStatus
+    error: Exception
+
+    @property
+    def index(self) -> int:
+        return self.child.index
 
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    """What one execution pass did.
-
-    It does not report where an interrupted pass stopped, because that is not the
-    driver's to know: refresh the sweep and the children say so. A driver that
-    returned its own account of where it got to would be the state this design
-    exists to not have.
-    """
+    """What one execution pass did."""
 
     ran: tuple[ChildStatus, ...]
     skipped: tuple[ChildStatus, ...]
     missing: tuple[ChildStatus, ...]
+    failed: tuple[FailedChild, ...] = ()
+
+
+def _resolve_only_selectors(
+    only: Sequence[int | str], active: Sequence[ChildStatus]
+) -> set[int]:
+    """Resolve child indices or gate values against active children, refusing unknowns."""
+    by_index = {child.index: child.index for child in active}
+    by_gate: dict[Any, list[int]] = {}
+    by_gate_str: dict[str, list[int]] = {}
+    for child in active:
+        by_gate.setdefault(child.gate_value, []).append(child.index)
+        by_gate_str.setdefault(str(child.gate_value), []).append(child.index)
+
+    selected: set[int] = set()
+    unknown: list[int | str] = []
+    for selector in only:
+        if isinstance(selector, int) and not isinstance(selector, bool):
+            if selector in by_index:
+                selected.add(selector)
+                continue
+            if selector in by_gate:
+                selected.update(by_gate[selector])
+                continue
+            unknown.append(selector)
+        else:
+            if selector in by_gate:
+                selected.update(by_gate[selector])
+                continue
+            if str(selector) in by_gate_str:
+                selected.update(by_gate_str[str(selector)])
+                continue
+            unknown.append(selector)
+
+    if unknown:
+        indices = [child.index for child in active]
+        gates = [child.gate_value for child in active]
+        raise RefusalError(
+            f"unknown child selector(s) in only=: {unknown}; "
+            f"active indices: {indices}, gates: {gates}"
+        )
+    return selected
 
 
 def execute_sweep(
     sweep_dir: Path,
     run_child: RunChild,
     *,
-    only: Sequence[int] | None = None,
+    only: Sequence[int | str] | None = None,
+    on_error: ErrorPolicy = "stop",
 ) -> ExecutionResult:
     """Run every outstanding child, holding no state of its own.
 
-    The driver's entire memory is on disk, in the children's manifests. Kill it at
-    any point and start it again: completed children are skipped, the one that was
-    interrupted resumes, and the rest run. Nothing is lost and nothing is repeated,
-    and that is true without the driver having written anything down — which is what
-    makes "stop after this child, I need the GPU" a supported operation rather than
-    a feature.
+    ``on_error`` defaults to ``"stop"`` (propagating the first child exception);
+    pass ``on_error="continue"`` to record per-child exceptions in
+    ``ExecutionResult.failed`` and continue running remaining siblings while
+    always propagating ``KeyboardInterrupt`` and ``SystemExit``.
 
-    A missing child is reported, not run and not skipped silently: its directory is
-    gone, so there is nothing to resume, and quietly passing over it would let a
-    sweep report itself finished while a child it names does not exist.
-
-    Interrupting propagates. A signal is the user's decision, and swallowing it here
-    to move to the next child would be the opposite of what was asked.
+    ``only`` accepts child indices or gate values and refuses unknown selectors.
     """
+    if on_error not in ("stop", "continue"):
+        raise RefusalError(f"on_error must be 'stop' or 'continue', not {on_error!r}")
+
     status = refresh_sweep(sweep_dir)
-    wanted = set(only) if only is not None else None
+    wanted = _resolve_only_selectors(only, status.current) if only is not None else None
 
     ran: list[ChildStatus] = []
     skipped: list[ChildStatus] = []
     missing: list[ChildStatus] = []
+    failed: list[FailedChild] = []
 
     try:
         for child in status.current:
@@ -299,14 +319,24 @@ def execute_sweep(
             if not child.resumable:
                 skipped.append(child)
                 continue
-            run_child(child)
-            ran.append(child)
+            if on_error == "continue":
+                try:
+                    run_child(child)
+                except (KeyboardInterrupt, SystemExit):
+                    raise
+                except Exception as exc:
+                    failed.append(FailedChild(child=child, error=exc))
+                else:
+                    ran.append(child)
+            else:
+                run_child(child)
+                ran.append(child)
     finally:
-        # Whatever happened — finished, interrupted, or a child raising — the cache
-        # is brought up to date before leaving, so the file on disk describes the
-        # sweep as it now is rather than as it was when the pass began.
         refresh_sweep(sweep_dir)
 
     return ExecutionResult(
-        ran=tuple(ran), skipped=tuple(skipped), missing=tuple(missing)
+        ran=tuple(ran),
+        skipped=tuple(skipped),
+        missing=tuple(missing),
+        failed=tuple(failed),
     )

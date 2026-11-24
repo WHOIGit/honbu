@@ -165,13 +165,13 @@
   completed run; `--init` removed with `initialize_run()` retained for sweep
   preparation; framework-option applicability derived per command and enforced at
   parse time, with help generated from the same derivation.
-- [ ] 4.2 Run comparison engine (`compare_runs`: caller-declared gates, N-way
+- [x] 4.2 Run comparison engine (`compare_runs`: caller-declared gates, N-way
   config diff sharing `compare_configs`, objective ranking over `best.metrics`,
   graceful unranked listing of incomplete runs, sweep rollup).
-- [ ] 4.3 Version-aware reconciliation (per-hash recipe & `encoder_version` gating,
+- [x] 4.3 Version-aware reconciliation (per-hash recipe & `encoder_version` gating,
   encoder re-hash, resolved-tree diff, key-compatible stored-source comparison
   minus `version`, defaulting to `on_unreconcilable="warn"` with opt-in `"refuse"`).
-- [ ] 4.4 Reusable run compatibility gating (`check_run_compatibility` over D7
+- [x] 4.4 Reusable run compatibility gating (`check_run_compatibility` over D7
   reconciliation, supporting ensembling/merging/cross-run checks while projects
   own artifact combination).
 
@@ -190,7 +190,7 @@
 
 ## 5. Release discipline and adoption
 
-- [ ] 5.1 Guard test: a minor framework version bumps no hash recipe version and
+- [x] 5.1 Guard test: a minor framework version bumps no hash recipe version and
   does not change the canonical encoder version.
 - [x] 5.2 Adoption guide + reference: assemble a `RootConfig`, register commands,
   declare hashes, declare an objective, retype paths to the portable-path marker —
@@ -219,16 +219,16 @@
 
 ## 7. Decoupled CLI, fork lineage, and interface cleanups (supersedes 3.7)
 
-- [ ] 7.1 Core dependencies & layering guard (D20): replace unused `rich>=13`
+- [x] 7.1 Core dependencies & layering guard (D20): replace unused `rich>=13`
   with `typer>=0.12` in core dependencies; extend `test_layering` to assert
   `honbu.core` imports no Hydra/OmegaConf/YAML/Typer, and neither `honbu.flow`
   nor `honbu.cli` top-level imports Typer (only `honbu.cli.presets` imports
   Typer).
-- [ ] 7.2 Opt-in `HashedRuntimeConfig` preset (D21): export
+- [x] 7.2 Opt-in `HashedRuntimeConfig` preset (D21): export
   `HashedRuntimeConfig(RuntimeConfig)` in `honbu.core.blocks` pre-wired to
   `FromHash("config_hash")` and `config_id = "{runtime.config_hash:coolname}"`,
   keeping bare `RuntimeConfig` hash-free.
-- [ ] 7.3 Pure `honbu.flow` & glue fixes (D15, D17, D18, D19):
+- [x] 7.3 Pure `honbu.flow` & glue fixes (D15, D17, D18, D19):
   - Strip CLI fields (`options`, `positionals`, `applicable_options`,
     `ParsedInvocation`, `parse_invocation`) from `CommandSpec` and `honbu.flow`.
   - Remove `Application` and `dispatch_command` from `honbu.flow.harness`.
@@ -244,7 +244,7 @@
     optional CLI hint override.
   - Parameterize `config_hash_name` (default `"config_hash"`) in `open_run` and
     `parent_record`.
-- [ ] 7.4 Opt-in CLI patterns (`honbu.cli` & `honbu.cli.presets`, D19):
+- [x] 7.4 Opt-in CLI patterns (`honbu.cli` & `honbu.cli.presets`, D19):
   - Create library-agnostic `honbu.cli`: `validate_override_tokens`,
     `split_dash_rule`, `select_config_source`, refusal exit helper (with optional
     structured-error hook), warning emitter, and `CONVENTIONAL_FLAGS`.
@@ -253,16 +253,16 @@
     `ForkArtifactOpt`, `ConfigDirsOpt`, `ClobberOpt`, `ResumeOpt`), customizable
     option factories, and optional mountable Typer command builders for
     materialization and comparison.
-- [ ] 7.5 Peer operation alignment:
+- [x] 7.5 Peer operation alignment:
   - Rename `OperandSource` `"continue"` → `"composed"` in `honbu.compare.configs`.
   - Parameterize `child_argv` flag spellings in `honbu.sweeps.progress`.
-- [ ] 7.6 Update `examples/linefit`, tests, and docs:
+- [x] 7.6 Update `examples/linefit`, tests, and docs:
   - Port `examples/linefit/project.py` to Typer + `honbu.cli.presets` and
     `HashedRuntimeConfig`, keeping all doc snippet anchors live-tested.
   - Update `docs/how-to/commands.md` (including fixing `"create"` → `"produce"`),
     `docs/reference/cli.md`, `docs/reference/api.md`, and `docs/how-to/adopt.md`
     to match the Option B interface; verify `pytest` and `mkdocs build --strict`.
-- [ ] 7.7 Materialization fixes & drift upgrades (D27):
+- [x] 7.7 Materialization fixes & drift upgrades (D27):
   - Allow `ComposeSpec.local: str | None = "configs"` so packaged-only
     composition uses `local=None` instead of a sentinel directory hack.
   - Fix `closure_roots` to strip `@package` suffixes (`group@pkg` → `group`) and
@@ -281,7 +281,7 @@
     `local_only`, `packaged_only`).
   - Add optional Typer materialization command builder in `honbu.cli.presets`,
     update `tests/test_materialize.py` and `docs/how-to/materialize.md`.
-- [ ] 7.8 Config comparison fixes & pure-hash evaluation (D26):
+- [x] 7.8 Config comparison fixes & pure-hash evaluation (D26):
   - Validate operands through `root_type` at `authored`, `behavioral`, and
     `by_hash` so schema defaults normalize cleanly (keeping `literal` raw).
   - Evaluate all `reads_inputs=False` declarations (`FieldHash`, `SourceHash`,
@@ -295,7 +295,7 @@
   - Clean up `ConfigOperand`: drop redundant `"run"` source (keeping `default`,
     `file`, `composed`, `resolved`), add per-operand `extra_dirs` and
     `config_index`, and update `tests/test_compare.py` and `docs/how-to/compare.md`.
-- [ ] 7.9 Identity & hashing fixes and ergonomics (D4, D5, D18):
+- [x] 7.9 Identity & hashing fixes and ergonomics (D4, D5, D18):
   - Add `versioned: bool = True` to `SourceHash` and `FannedHash` (defaulting to
     requiring `"version"` in built sources, allowing a versionless custom
     `config_hash` via `versioned=False`), and allow `config_hash` to optionally
@@ -315,7 +315,7 @@
     `tests/test_core.py` (completing `1.2`'s `Pinned mechanics` scenario) and fix
     doc drift (`docs/concepts/identity.md` `ByteHash` Deferred=`no`→`yes`;
     `docs/reference/hashes.md` `hashes/`→`config/hashes/`).
-- [ ] 7.10 Sweeps bugs, `SweepOutputBlock`, compositor wiring, and execution ergonomics (D22–D24, D29):
+- [x] 7.10 Sweeps bugs, `SweepOutputBlock`, compositor wiring, and execution ergonomics (D22–D24, D29):
   - Fix sequence-index traversal in `assign_path` (`prepare.py`) and `_lookup`
     (`plan.py`), unwrap `Optional`/`Annotated` in `declared_block_type`
     (`definitions.py`) via `traversable_submodel`, and normalize `/` + `@pkg` in
@@ -347,7 +347,7 @@
     (`ExecutionResult.failed`, always propagating `KeyboardInterrupt`/`SystemExit`),
     validated `only=` accepting child indices or gate values, and separate
     `SweepStatus.missing` (active) from `SweepStatus.retired_missing`.
-- [ ] 7.11 Run lifecycle fixes & manifest hardening (D12, D14, D15):
+- [x] 7.11 Run lifecycle fixes & manifest hardening (D12, D14, D15):
   - Fix Phase 7 (`_phase7_leaves` in `resolve.py`): check `_authored` for leaf
     `dir`/`dir_template` (matching Phase 6), re-render templated leaves in
     `command.scope` on augmenting `--resolved` replays unless `leaf.dir` was
@@ -375,7 +375,7 @@
     `TemplateError` and support sequence indices in `_lookup`; skip disabled
     `OutputLeaf` (`enabled=False`) in `_scope_dirs`; handle `resolved.is_file()`
     in `targets.prepare_scope` (matching `prepare_target`).
-- [ ] 7.12 Strict schema & path portability fixes (D2, D9, D10, D18):
+- [x] 7.12 Strict schema & path portability fixes (D2, D9, D10, D18):
   - Mark `OutputBlock.dir_template` and `OutputLeaf.dir_template` with `DIRECTIVE`
     so neither `dir` nor `dir_template` enters behavioral digests or `behavioral`
     comparison (keeping `OutputBlock.dir` as authorable `PortablePath | None`).
@@ -394,7 +394,7 @@
   - Fix doc & export drift: correct `IDENTITY` description in
     `docs/reference/markers.md`, export `CONFIG_HASH_NAME` from `honbu.core`, and
     refresh the stale docstring in `honbu/__init__.py`.
-- [ ] 7.13 Passive `ProjectSpec`, curated top-level exports, & adoption pattern note (D1, D19):
+- [x] 7.13 Passive `ProjectSpec`, curated top-level exports, & adoption pattern note (D1, D19):
   - Add passive frozen `ProjectSpec(root_type, compose_spec, hashes=...,
     templates=..., config_hash_name=...)` in `honbu.flow` (running
     `validate_root_contract` and `validate_identity_fields` on construction, with

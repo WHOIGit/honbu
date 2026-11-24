@@ -89,30 +89,44 @@ def divergent_contexts() -> tuple[TemplateContext, TemplateContext]:
 
 
 def check_gate_is_stable(gate: str, *, resolve_with: ResolveWith) -> Any:
-    """Resolve one configuration twice and require the gate to agree.
+    """Resolve one configuration twice and require both the gate and target to agree.
 
     Verified rather than trusted, because the alternative is a rule in a document.
     The two obvious ways to declare a useless gate — pointing it at ``run_id``, or
     at any template carrying a timestamp — are both things a careful person writes
     on the way to something else, and neither announces itself: the sweep prepares,
     every child gets its own directory, and the gate has silently been an alias for
-    the child index.
+    the child index. Likewise, a stable gate paired with a child output template
+    carrying ``{runtime.run_id}`` or ``{:timestamp}`` would relocate every child
+    on re-preparation and orphan completed runs.
 
-    One configuration is enough. The gate is a path, not a value, so an invocation-
-    derived path is invocation-derived for every child.
+    One configuration is enough. The gate and output template are paths, not
+    values, so an invocation-derived path is invocation-derived for every child.
     """
     first, second = divergent_contexts()
-    here = read_path(resolve_with(first).portable, gate)
-    there = read_path(resolve_with(second).portable, gate)
-    if here == there:
-        return here
-    raise RefusalError(
-        f"gate {gate!r} is not stable: resolving one configuration under two "
-        f"invocations gave {here!r} and {there!r}. A value minted per invocation "
-        f"can never collide, so it would gate nothing while appearing to pass. "
-        f"Point the gate at a configuration-derived value — a configuration digest "
-        f"or an identity templated from one."
-    )
+    r1 = resolve_with(first)
+    r2 = resolve_with(second)
+    here = read_path(r1.portable, gate)
+    there = read_path(r2.portable, gate)
+    if here != there:
+        raise RefusalError(
+            f"gate {gate!r} is not stable: resolving one configuration under two "
+            f"invocations gave {here!r} and {there!r}. A value minted per invocation "
+            f"can never collide, so it would gate nothing while appearing to pass. "
+            f"Point the gate at a configuration-derived value — a configuration digest "
+            f"or an identity templated from one."
+        )
+    t1 = getattr(r1, "target", None)
+    t2 = getattr(r2, "target", None)
+    if t1 != t2:
+        raise RefusalError(
+            f"child output target is not stable across invocations "
+            f"({t1!r} vs {t2!r}), even though gate {gate!r} is stable. "
+            f"Remove per-invocation tokens (such as {{runtime.run_id}} or "
+            f"{{:timestamp}}) from the child output template so re-preparation "
+            f"does not orphan existing children."
+        )
+    return here
 
 
 def check_gate_in_output_template(
@@ -211,8 +225,9 @@ def check_gate_distinguishes(
     if len(collisions) > 5:
         lines.append(f"  ... and {len(collisions) - 5} more")
     lines.append(
-        "Either widen what the gate reads so it covers those axes, or add the child "
-        "index or a realized axis value to the output template."
+        "Either widen what the gate reads (for example the hash or templated "
+        "field backing it) so it covers those axes, or choose a gate path that "
+        "varies across every colliding axis."
     )
     raise RefusalError("\n".join(lines))
 

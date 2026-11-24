@@ -21,11 +21,12 @@ import pytest
 SRC = Path(__file__).resolve().parent.parent / "src" / "honbu"
 CORE = SRC / "core"
 FLOW = SRC / "flow"
+CLI = SRC / "cli"
 
 #: Packages the core layer must stay clear of. Not a style rule: the layer's
 #: whole claim is that it works on a dict you built by hand, and one import of a
-#: composition primitive ends that claim silently.
-FORBIDDEN = frozenset({"hydra", "omegaconf", "yaml"})
+#: composition or CLI primitive ends that claim silently.
+FORBIDDEN = frozenset({"hydra", "omegaconf", "yaml", "typer"})
 
 
 def _imported_roots(source: str) -> set[str]:
@@ -83,15 +84,33 @@ def test_core_is_importable_without_touching_flow():
             )
 
 
+def test_flow_and_cli_top_level_import_no_typer():
+    """Only honbu.cli.presets may import Typer (D19, D20)."""
+    offenders: dict[str, set[str]] = {}
+    candidates = list(FLOW.rglob("*.py"))
+    if CLI.is_dir():
+        for path in CLI.rglob("*.py"):
+            rel = path.relative_to(CLI)
+            if rel.parts[0] in {"presets", "presets.py"}:
+                continue
+            candidates.append(path)
+    for path in sorted(candidates):
+        if "typer" in _imported_roots(path.read_text()):
+            offenders[str(path.relative_to(SRC))] = {"typer"}
+    assert not offenders, (
+        f"modules outside honbu.cli.presets import typer: {offenders}. "
+        "Keep honbu.flow and top-level honbu.cli library-agnostic."
+    )
+
+
 def test_core_and_flow_do_not_import_operations():
     """Operations are optional in the only sense that matters: lower layers do not need them.
 
-    A sweep, a comparison and a materialization all span more than one run, or read
-    a configuration without running one. If flow reached into them, resolving a
-    configuration would drag in the whole of L3, and 'adopt the depth you want'
-    would be a claim with nothing behind it.
+    A sweep, a comparison, a materialization, or CLI helpers all sit above core/flow.
+    If flow reached into them, resolving a configuration would drag in optional peer
+    areas, and 'adopt the depth you want' would be a claim with nothing behind it.
     """
-    operations = ("honbu.sweeps", "honbu.compare", "honbu.materialize")
+    operations = ("honbu.cli", "honbu.sweeps", "honbu.compare", "honbu.materialize")
     for path in sorted([*CORE.rglob("*.py"), *FLOW.rglob("*.py")]):
         for candidate in _honbu_imports(path.read_text()):
             assert not candidate.startswith(operations), (
@@ -104,6 +123,8 @@ def test_public_package_areas_are_importable():
     for name in (
         "honbu.core",
         "honbu.flow",
+        "honbu.cli",
+        "honbu.cli.presets",
         "honbu.sweeps",
         "honbu.compare",
         "honbu.materialize",
@@ -112,6 +133,58 @@ def test_public_package_areas_are_importable():
 
 
 def test_legacy_package_names_are_removed():
-    for name in ("honbu.mechanics", "honbu.capabilities"):
+    for name in ("honbu.mechanics", "honbu.capabilities", "honbu.flow.harness"):
         with pytest.raises(ModuleNotFoundError):
             importlib.import_module(name)
+
+
+def test_top_level_exports_are_curated():
+    import honbu
+
+    for expected in (
+        "StrictModel",
+        "ExperimentConfig",
+        "RuntimeConfig",
+        "HashedRuntimeConfig",
+        "OutputBlock",
+        "OutputLeaf",
+        "PortablePath",
+        "ResolvedString",
+        "ResolvedPath",
+        "TemplatedString",
+        "TemplatedIdentity",
+        "DERIVED",
+        "DIRECTIVE",
+        "IDENTITY",
+        "PORTABLE_PATH",
+        "RESOLVED_ONLY",
+        "TEMPLATED",
+        "FromHash",
+        "DEFER",
+        "Deferred",
+        "backend_kwargs",
+        "FieldHash",
+        "SourceHash",
+        "ByteHash",
+        "FannedHash",
+        "HashRegistry",
+        "HashEntry",
+        "project_fields",
+        "project_model",
+        "validate_root_contract",
+        "validate_identity_fields",
+        "unmarked_path_fields",
+        "HonbuError",
+        "RefusalError",
+    ):
+        assert hasattr(honbu, expected), f"missing curated top-level export {expected}"
+
+    for internal in (
+        "prepare_target",
+        "prepare_scope",
+        "atomic_write",
+        "canonical_bytes",
+        "render_template",
+        "marked_field_paths",
+    ):
+        assert not hasattr(honbu, internal), f"internal helper leaked to top-level honbu: {internal}"

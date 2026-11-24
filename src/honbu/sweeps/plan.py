@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
 from honbu.core.canonical import hash_source
 from honbu.core.markers import check_field_path, excluded_source_paths, prune_path
-from honbu.errors import RefusalError
+from honbu.errors import DeclarationError, RefusalError
+from honbu.flow.compose import ComposeSpec, compose_config
+from honbu.flow.project import ProjectSpec
 from honbu.sweeps.axes import expand, normalize_axes, normalize_covariant_axes, sweep_axes
 from honbu.sweeps.definitions import (
     SWEEP_BLOCK,
@@ -72,14 +75,21 @@ def check_axis_paths(
 
 
 def override_key(token: str) -> str | None:
-    """The configuration path an override token addresses, prefixes stripped.
+    """The dotted configuration path an override token addresses.
 
+    Strips leading ``+``/``~`` prefixes, drops any ``@package`` relocation suffix,
+    and normalizes Hydra slash-separated group paths (``model/head`` → ``model.head``).
     Returns None for a token that addresses nothing assignable.
     """
     body = token.lstrip("+~")
     if not body:
         return None
     key = body.split("=", 1)[0].strip()
+    if not key:
+        return None
+    if "@" in key:
+        key = key.split("@", 1)[0]
+    key = key.strip("/").replace("/", ".")
     return key or None
 
 
@@ -123,18 +133,7 @@ def check_no_override_contests_an_axis(
 def axis_displacement_warnings(
     axes: Sequence[Axis], composed: Mapping[str, Any]
 ) -> tuple[str, ...]:
-    """One warning per axis that displaces a value the base configuration sets.
-
-    The axis wins; this says so. There is deliberately no policy and no flag. A
-    stricter rule — refuse until the base stops setting the path — fails three ways:
-    it is incompatible with group axes, whose package path the defaults list
-    *always* sets; the misspelling it chiefly guarded against is caught precisely by
-    axis-path validation; and its remedy pressures an author to delete a default
-    that is meaningful when the configuration runs alone.
-
-    Once per axis rather than once per child, so a sweep of two hundred children
-    does not bury it under two hundred copies.
-    """
+    """One warning per axis that displaces a value the base configuration sets."""
     warnings: list[str] = []
     for axis in axes:
         displaced = {}
@@ -153,13 +152,69 @@ def axis_displacement_warnings(
 
 
 def _lookup(node: Mapping[str, Any], path: str) -> tuple[bool, Any]:
-    """Whether a dotted path is present in a composed tree, and its value."""
+    """Whether a dotted path (including sequence indices) is present, and its value."""
     current: Any = node
     for segment in path.split("."):
-        if not isinstance(current, Mapping) or segment not in current:
+        if isinstance(current, Mapping):
+            if segment not in current:
+                return False, None
+            current = current[segment]
+        elif isinstance(current, (list, tuple)):
+            if not segment.lstrip("-").isdigit():
+                return False, None
+            index = int(segment)
+            if not -len(current) <= index < len(current):
+                return False, None
+            current = current[index]
+        else:
             return False, None
-        current = current[segment]
     return True, current
+
+
+def sweep_composers(
+    compose_spec: ComposeSpec,
+    *,
+    overrides: Sequence[str] = (),
+    extra_dirs: Sequence[Path | str] = (),
+    cwd: Path | None = None,
+) -> tuple[Callable[[Mapping[str, str]], dict[str, Any]], Callable[[str], dict[str, Any]]]:
+    """Build ``(compose_child, compose_without)`` callbacks for group axes (D24).
+
+    Automatically forwards all non-sweep ``overrides`` and ``extra_dirs``, and
+    translates nested dotted group paths to Hydra slash syntax
+    (``model.head`` → ``model/head=<option>`` and ``~model/head``).
+    """
+    base_overrides = [
+        token
+        for token in overrides
+        if (k := override_key(token)) is None
+        or (k != SWEEP_BLOCK and not k.startswith(f"{SWEEP_BLOCK}."))
+    ]
+
+    def _group_syntax(dotted: str) -> str:
+        return dotted.replace(".", "/")
+
+    def compose_child(selections: Mapping[str, str]) -> dict[str, Any]:
+        group_overrides = [
+            f"{_group_syntax(group)}={option}"
+            for group, option in selections.items()
+        ]
+        return compose_config(
+            compose_spec,
+            overrides=[*base_overrides, *group_overrides],
+            extra_dirs=extra_dirs,
+            cwd=cwd,
+        )
+
+    def compose_without(group: str) -> dict[str, Any]:
+        return compose_config(
+            compose_spec,
+            overrides=[*base_overrides, f"~{_group_syntax(group)}"],
+            extra_dirs=extra_dirs,
+            cwd=cwd,
+        )
+
+    return compose_child, compose_without
 
 
 def check_no_group_is_shadowed(
@@ -167,20 +222,7 @@ def check_no_group_is_shadowed(
     *,
     compose_without: Any,
 ) -> None:
-    """Refuse a group axis whose package path the base configuration also supplies.
-
-    A configuration group is *merged*, not substituted. If the base sets
-    ``data.split`` directly and the sweep selects between ``data`` options, every
-    child gets the union — the selected file plus the base's leftovers — so an
-    ablation meant to swap the block wholesale silently fails to swap part of it.
-    The failure is invisible in the result: every child looks like it composed.
-
-    Detection needs composition rather than the block alone, because after
-    composition the package path holds the merged product and carries no record of
-    where each key came from. ``compose_without`` is called with a group name and
-    must return the configuration composed with that group dropped from the defaults
-    list; whatever remains at the package path is, exactly, what the base supplies.
-    """
+    """Refuse a group axis whose package path the base configuration also supplies."""
     for axis in axes:
         if axis.kind != "group":
             continue
@@ -200,12 +242,7 @@ def check_no_group_is_shadowed(
 
 @dataclass(frozen=True)
 class SweepPlan:
-    """A validated sweep, expanded but not yet resolved or written.
-
-    Everything that can be checked without composing a child has been. What remains
-    for preparation is per-child work: resolving each combination, checking the gate
-    across them, and writing the directories.
-    """
+    """A validated sweep, expanded but not yet resolved or written."""
 
     axes: tuple[Axis, ...]
     coordinates: tuple[Coordinate, ...]
@@ -219,52 +256,56 @@ class SweepPlan:
 def plan_sweep(
     block: SweepBlock,
     *,
-    root_type: type[BaseModel],
     composed: Mapping[str, Any],
+    root_type: type[BaseModel] | None = None,
     overrides: Sequence[str] = (),
+    compose_spec: ComposeSpec | None = None,
+    extra_dirs: Sequence[Path | str] = (),
     compose_without: Any = None,
+    project: ProjectSpec | None = None,
+    cwd: Path | None = None,
 ) -> SweepPlan:
     """Validate a sweep block and expand it. Refuses; never partially succeeds.
 
-    The order is chosen so the first thing reported is the thing most likely to be
-    wrong and cheapest to fix. Shape before paths, because a ragged covariant axis
-    makes every subsequent message about a path that was never coherently claimed.
-    Paths before expansion, because a bad path spoils every child and there is no
-    point building a matrix out of it.
-
-    ``compose_without`` is optional so a sweep can be planned against a
-    configuration dict alone. Without it the group-shadow check cannot run, since it
-    is the only check that needs composition; a caller that has a compositor should
-    pass one.
+    When ``compose_spec`` (or ``project``) is supplied and ``compose_without`` is
+    omitted, group-shadow composition is wired automatically via
+    :func:`sweep_composers`. Explicit ``compose_without`` stays available as an
+    escape hatch.
     """
-    axes = sweep_axes(block, root_type=root_type)
+    resolved_root = (
+        root_type if root_type is not None else (project.root_type if project else None)
+    )
+    if resolved_root is None:
+        raise DeclarationError("plan_sweep() requires root_type or project")
+    spec = (
+        compose_spec
+        if compose_spec is not None
+        else (project.compose_spec if project is not None else None)
+    )
+    without_cb = compose_without
+    if without_cb is None and spec is not None:
+        _, without_cb = sweep_composers(
+            spec, overrides=overrides, extra_dirs=extra_dirs, cwd=cwd
+        )
+
+    axes = sweep_axes(block, root_type=resolved_root)
     check_no_path_claimed_twice(axes)
-    check_axis_paths(axes, root_type=root_type, composed=composed)
+    check_axis_paths(axes, root_type=resolved_root, composed=composed)
     check_no_override_contests_an_axis(axes, overrides)
-    if compose_without is not None:
-        check_no_group_is_shadowed(axes, compose_without=compose_without)
+    if without_cb is not None:
+        check_no_group_is_shadowed(axes, compose_without=without_cb)
     return SweepPlan(
         axes=axes,
         coordinates=expand(axes),
         warnings=axis_displacement_warnings(axes, composed),
-        digest=sweep_definition_digest(composed, root_type=root_type, block=block),
+        digest=sweep_definition_digest(composed, root_type=resolved_root, block=block),
     )
 
 
 def sweep_definition_digest(
     composed: Mapping[str, Any], *, root_type: type[BaseModel], block: SweepBlock
 ) -> str:
-    """A digest over what a sweep *is*: its base configuration and its axes.
-
-    Under the same exclusions as any other behavioral source, so generated
-    identities and output locations stay out of it. Two sweeps differing only in
-    where they write therefore share a definition digest, which is what makes the
-    digest usable as a claim about the experiment rather than about the filesystem.
-
-    The gate is excluded deliberately: it names how children are *told apart*, not
-    what they are. Renaming the gate does not change the set of configurations the
-    sweep describes.
-    """
+    """A digest over what a sweep *is*: its base configuration and its axes."""
     base = without_sweep_block(composed)
     for path in excluded_source_paths(root_type):
         prune_path(base, path)

@@ -31,7 +31,7 @@ remains is the behavioral configuration. See [Markers](markers.md).
 
 ## Artifacts
 
-Each computed digest is written under the run's `hashes/` directory as its own
+Each computed digest is written under the run's `config/hashes/` directory as its own
 artifact, recording the value, the recipe version, and — for a deferred hash — the
 inputs reported when it was completed. A fanned hash writes one file per key, with the
 key sanitized for the filesystem and recorded inside; colliding filenames are refused

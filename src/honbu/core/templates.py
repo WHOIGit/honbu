@@ -50,6 +50,20 @@ class TemplateContext:
     seed: str
     extras: Mapping[str, Any] = field(default_factory=dict)
 
+    @classmethod
+    def now(cls, *, extras: Mapping[str, Any] | None = None) -> TemplateContext:
+        """Mint clock and fresh per-invocation entropy once for a resolution."""
+        from datetime import timezone
+
+        from honbu.core.identifiers import fresh_seed
+
+        return cls(
+            now_local=datetime.now(),
+            now_utc=datetime.now(timezone.utc),
+            seed=fresh_seed(),
+            extras=dict(extras or {}),
+        )
+
 
 #: ``value`` is None for the invocation form ``{:name}``, and the resolved
 #: configuration value for ``{path:name}``. Each function decides which it accepts.
@@ -179,9 +193,19 @@ def template_value_paths(template: str) -> tuple[str, ...]:
 def _lookup(values: Mapping[str, Any], dotted: str) -> Any:
     current: Any = values
     for part in dotted.split("."):
-        if not isinstance(current, Mapping) or part not in current:
+        if isinstance(current, Mapping):
+            if part not in current:
+                raise KeyError(dotted)
+            current = current[part]
+        elif isinstance(current, (list, tuple)):
+            if not part.lstrip("-").isdigit():
+                raise KeyError(dotted)
+            index = int(part)
+            if not -len(current) <= index < len(current):
+                raise KeyError(dotted)
+            current = current[index]
+        else:
             raise KeyError(dotted)
-        current = current[part]
     return current
 
 
@@ -256,7 +280,16 @@ def render_template(
             raise TemplateError(
                 f"template {template!r}: {head!r} is {type(value).__name__}, not a scalar"
             )
-        text = format(value, tail) if separator else str(value)
+        if separator:
+            try:
+                text = format(value, tail)
+            except (ValueError, TypeError) as exc:
+                raise TemplateError(
+                    f"template {template!r}: {tail!r} is neither a registered template "
+                    f"function nor a valid format specifier for {type(value).__name__}: {exc}"
+                ) from None
+        else:
+            text = str(value)
         return emit(text, sanitize=head not in path_fields)
 
     rendered = _TOKEN.sub(replace, template)

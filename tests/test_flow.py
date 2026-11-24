@@ -94,6 +94,19 @@ def test_a_root_with_no_output_block_fails():
         validate_root_contract(NoOutputs)
 
 
+def test_unmarked_output_root_fails():
+    from pathlib import Path
+
+    class UnmarkedOutputRoot(StrictModel):
+        experiment: ExperimentConfig
+        runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+        output_root: Path = Path("./runs")
+        training_outputs: TrainingOutputs = Field(default_factory=TrainingOutputs)
+
+    with pytest.raises(DeclarationError, match="output_root must carry PathMarker"):
+        validate_root_contract(UnmarkedOutputRoot)
+
+
 def test_the_guard_does_not_police_what_a_subclass_does_to_inherited_fields():
     """Deliberate. Policing this forbade a pattern one project already relies on
     and guarded a failure that announces itself the same day."""
@@ -183,25 +196,34 @@ def test_a_read_only_command_declares_no_target():
     assert registry.get("inspect-config").target is None
 
 
-def test_a_target_template_naming_a_deferred_value_fails_at_import():
-    """You cannot write into a directory whose name you learn by writing."""
+def test_a_deferred_hash_cannot_bind_a_from_hash_field():
+    """Deferred hashes are run-time facts and are prevented structurally at import."""
+    from typing import Annotated
 
-    class Deferring(OutputBlock):
-        dir_template: str | None = "{data.dataset_hash:coolname}/out"
+    from honbu import FromHash, ResolvedString, validate_identity_fields
+
+    class DataWithDeferred(StrictModel):
+        uri: PortablePath
+        dataset_hash: Annotated[ResolvedString, FromHash("dataset_hash")] = None
 
     class RootD(StrictModel):
         experiment: ExperimentConfig
         runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
-        data: DataBlock
+        data: DataWithDeferred
         output_root: PortablePath = "./runs"
-        outputs: Deferring = Field(default_factory=Deferring)
+        training_outputs: TrainingOutputs = Field(default_factory=TrainingOutputs)
 
-    spec = CommandSpec(
-        name="train",
-        target=TargetSpec("outputs.dir_template", "outputs.dir", "output_root"),
+    hashes = HashRegistry(
+        [
+            SourceHash(
+                name="dataset_hash",
+                build=lambda ctx: {"version": "1", "rows": 1},
+                reads_inputs=True,
+            )
+        ]
     )
-    with pytest.raises(DeclarationError, match="deferred to work"):
-        CommandRegistry([spec], root_type=RootD, deferred_paths=("data.dataset_hash",))
+    with pytest.raises(DeclarationError, match="deferred past resolution"):
+        validate_identity_fields(RootD, hashes)
 
 
 def test_steps_are_declared_and_an_undeclared_name_is_refused():

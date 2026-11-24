@@ -65,7 +65,7 @@ kind, because a child that cannot be found again cannot be resumed or grown.
 | --- | --- | --- |
 | `FieldHash` | named subtrees of the configuration | no |
 | `SourceHash` | a mapping you build, optionally from inputs | when `reads_inputs=True` |
-| `ByteHash` | bytes you supply | no |
+| `ByteHash` | bytes you supply | yes |
 | `FannedHash` | one entry per key of a mapping — a digest per split | inherits |
 
 ```python

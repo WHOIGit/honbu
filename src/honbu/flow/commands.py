@@ -13,45 +13,27 @@ block would silently grant permission to delete a directory. That is the mistake
 operation — and the shape of the projects confirms it: one root configuration has
 a dataset-product directory and a run directory, cleared by different commands.
 
+Commands here declare lifecycle and schema semantics only — never CLI flags,
+options, or positionals (D19). Projects own their CLI surface completely and call
+into :mod:`honbu.flow` with typed Python arguments.
+
 Everything declared here is validated when the registry is constructed, i.e. at
 import. A renamed configuration block should break the build, not a ``rmtree``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel
 
-from honbu.errors import DeclarationError, RefusalError
-from honbu.flow.compose import (
-    ALL_CONFIG_SOURCES,
-    FRAMEWORK_OPTIONS,
-    SOURCE_OPTIONS,
-    ConfigSource,
-    OptionSpec,
-    selected_source,
-    split_argv,
-)
 from honbu.core.hashes import HashRegistry, declared_path_exists
-from honbu.core.templates import template_value_paths
+from honbu.errors import DeclarationError
+from honbu.flow.compose import ALL_CONFIG_SOURCES, ConfigSource
 
 CommandMode = Literal["produce", "augment"]
-
-
-@dataclass(frozen=True)
-class Positional:
-    """A bare argv token the command takes.
-
-    Positionals reach the command, never the configuration. Letting one assign a
-    field would give two spellings for the same value, which is how the dash-rule
-    grammar starts leaking.
-    """
-
-    name: str
-    required: bool = True
 
 
 @dataclass(frozen=True)
@@ -110,7 +92,7 @@ class StepSpec:
 
 @dataclass(frozen=True)
 class CommandSpec:
-    """One command: its place in the command tree, its write scope, its hashes.
+    """One command's lifecycle and schema metadata: write scope, hashes, and steps.
 
     ``name`` is a tuple because a flat string is lossy. One project has
     ``inspect config-compare``; flattened to ``inspect-config-compare`` you cannot
@@ -143,14 +125,9 @@ class CommandSpec:
     #: Which configuration sources this command accepts. An empty tuple means the
     #: command composes nothing, so a missing default root is not an error for it.
     config_sources: Sequence[ConfigSource] = ALL_CONFIG_SOURCES
-    positionals: Sequence[Positional] = ()
-    #: The artifact key a continued run picks up from. Required when the command
-    #: accepts the continue source: Honbu records the link, and only the project
-    #: knows which of its artifacts is the one to continue from.
-    continue_artifact: str | None = None
-    #: Project options, so the argv split knows their arity before the CLI
-    #: framework parses anything.
-    options: Sequence[OptionSpec] = ()
+    #: Optional default parent artifact key when forking via :func:`parent_record`.
+    #: Callers may always select a different registered artifact key at invocation time.
+    fork_artifact: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.name, str):
@@ -182,32 +159,6 @@ class CommandSpec:
         """The steps that must be satisfied for the run to be complete."""
         return self.step_names if self.completion is None else tuple(self.completion)
 
-    def applicable_options(self) -> tuple[str, ...]:
-        """Framework options this command accepts, derived from its declaration.
-
-        Derived rather than registered: every one of them is already implied by
-        something the command declares, so a second declaration could only drift
-        from the first. Search directories apply where the command composes;
-        permission to clear applies where it declares something clearable; resume
-        applies where it produces into a target.
-        """
-        names: list[str] = []
-        if self.config_sources:
-            names.append("--config-dir")
-            names.extend(
-                SOURCE_OPTIONS[source]
-                for source in self.config_sources
-                if source in SOURCE_OPTIONS
-            )
-        clearable = (self.mode == "produce" and self.target is not None) or (
-            self.mode == "augment" and bool(self.scope)
-        )
-        if clearable:
-            names.append("--clobber")
-        if self.mode == "produce" and self.target is not None:
-            names.append("--resume")
-        return tuple(names)
-
     def step(self, name: str) -> StepSpec:
         for spec in self.steps:
             if spec.name == name:
@@ -221,14 +172,11 @@ class CommandSpec:
 class CommandRegistry:
     """A project's commands, validated against its schema and hash registry.
 
-    Four checks, all at construction:
+    Three checks, all at construction:
 
     1. no duplicate command names
     2. every declared dotted path is a real field of the root
     3. every declared hash name exists in the hash registry
-    4. no producing command's target template names a value a deferred hash
-       produces — you cannot write into a directory whose name you learn by
-       writing
     """
 
     def __init__(
@@ -237,7 +185,6 @@ class CommandRegistry:
         *,
         root_type: type[BaseModel] | None = None,
         hashes: HashRegistry | None = None,
-        deferred_paths: Sequence[str] = (),
     ) -> None:
         slugs = [command.slug for command in commands]
         duplicates = {slug for slug in slugs if slugs.count(slug) > 1}
@@ -252,7 +199,6 @@ class CommandRegistry:
                 self._validate_paths(command, root_type)
             if hashes is not None:
                 self._validate_hashes(command, hashes)
-            self._validate_deferred(command, tuple(deferred_paths), root_type)
 
     @staticmethod
     def _validate_shape(command: CommandSpec) -> None:
@@ -297,15 +243,6 @@ class CommandRegistry:
                 "to resolve it from"
             )
 
-        optional_seen = False
-        for positional in command.positionals:
-            if positional.required and optional_seen:
-                raise DeclarationError(
-                    f"{command.invocation}: required positional "
-                    f"{positional.name!r} follows an optional one"
-                )
-            optional_seen = optional_seen or not positional.required
-
     @staticmethod
     def _validate_paths(command: CommandSpec, root_type: type[BaseModel]) -> None:
         declared: list[str] = list(command.scope)
@@ -328,27 +265,6 @@ class CommandRegistry:
                 f"{command.invocation} declares undeclared hashes: {unknown}"
             )
 
-    @staticmethod
-    def _validate_deferred(
-        command: CommandSpec,
-        deferred_paths: tuple[str, ...],
-        root_type: type[BaseModel] | None,
-    ) -> None:
-        if command.target is None or command.mode != "produce":
-            return
-        if not deferred_paths or root_type is None:
-            return
-        template = field_default(root_type, command.target.template)
-        if not isinstance(template, str):
-            return
-        for path in template_value_paths(template):
-            if path in deferred_paths:
-                raise DeclarationError(
-                    f"{command.invocation} target template references {path!r}, which "
-                    "is deferred to work. The output directory must be knowable "
-                    "before work begins."
-                )
-
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._commands))
@@ -363,96 +279,8 @@ class CommandRegistry:
             ) from None
 
 
-@dataclass(frozen=True)
-class ParsedInvocation:
-    """One command invocation, routed. The whole of argv, understood."""
-
-    command: CommandSpec
-    overrides: tuple[str, ...] = ()
-    options: Mapping[str, Any] = field(default_factory=dict)
-    positionals: Mapping[str, str] = field(default_factory=dict)
-    source: ConfigSource | None = None
-    source_value: str | None = None
-
-    @property
-    def argv_text(self) -> str:
-        """What the manifest records, so a run says how it was produced."""
-        parts = [self.command.invocation, *self.positionals.values()]
-        for name, value in self.options.items():
-            parts.extend([name] if value is True else [name, *_as_list(value)])
-        parts.extend(self.overrides)
-        return " ".join(parts)
-
-
-def _as_list(value: Any) -> list[str]:
-    return [str(v) for v in value] if isinstance(value, list) else [str(value)]
-
-
-def _inapplicable_reason(command: CommandSpec) -> dict[str, str]:
-    """Why each unoffered framework option does not apply, for the refusal message."""
-    reasons = {}
-    if not command.config_sources:
-        reasons["--config-dir"] = f"{command.invocation} composes no configuration"
-    for source, name in SOURCE_OPTIONS.items():
-        if source not in command.config_sources:
-            reasons[name] = f"{command.invocation} does not accept that source"
-    offered = set(command.applicable_options())
-    if "--clobber" not in offered:
-        reasons["--clobber"] = f"{command.invocation} declares nothing it may clear"
-    if "--resume" not in offered:
-        reasons["--resume"] = (
-            f"{command.invocation} does not produce a run, so there is none to resume"
-        )
-    return reasons
-
-
-def parse_invocation(command: CommandSpec, tokens: Sequence[str]) -> ParsedInvocation:
-    """Split argv for one command and match it against the command's declaration.
-
-    The framework options offered are the ones the command's declaration implies,
-    so an inapplicable one is refused here rather than silently ignored downstream.
-    Help is generated from the same derivation, which is what stops the two from
-    disagreeing — they used to, with ``--clobber`` absent from an inspect command's
-    help and accepted by its parser.
-    """
-    applicable = set(command.applicable_options())
-    split = split_argv(
-        tokens,
-        options=command.options,
-        framework=tuple(o for o in FRAMEWORK_OPTIONS if o.name in applicable),
-        reason=_inapplicable_reason(command),
-    )
-    source, value = selected_source(split.options, accepted=command.config_sources)
-
-    declared = list(command.positionals)
-    required = [p for p in declared if p.required]
-    if len(split.positionals) > len(declared) or len(split.positionals) < len(required):
-        expected = " ".join(
-            p.name if p.required else f"[{p.name}]" for p in declared
-        ) or "(none)"
-        raise RefusalError(
-            f"{command.invocation} takes positionals: {expected}; "
-            f"got {len(split.positionals)}"
-        )
-
-    return ParsedInvocation(
-        command=command,
-        overrides=split.overrides,
-        options=split.options,
-        positionals=dict(zip((p.name for p in declared), split.positionals)),
-        source=source,
-        source_value=value,
-    )
-
-
 def field_default(root_type: type[BaseModel], dotted: str) -> object | None:
-    """The schema default at ``dotted``, traversing direct submodels only.
-
-    Used to read a target's declared ``dir_template`` at import. It catches the
-    template a project committed, which is the one that matters — a configuration
-    may still override it, so the resolver repeats the check at render time
-    against the actual value.
-    """
+    """The schema default at ``dotted``, traversing direct submodels only."""
     from honbu.core.markers import parse_dotted, traversable_submodel
 
     segments = parse_dotted(dotted)

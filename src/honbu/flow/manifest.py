@@ -102,13 +102,22 @@ class Manifest:
         return manifest
 
     @classmethod
-    def load(cls, run_dir: Path) -> Manifest:
+    def load(cls, run_dir: Path, *, derive_state: bool = True) -> Manifest:
         path = run_dir / MANIFEST_NAME
         if not path.is_file():
             raise RefusalError(f"no {MANIFEST_NAME} in {run_dir}")
         data = read_json(path)
         if not isinstance(data, dict):
             raise RefusalError(f"{path} is not a manifest object")
+        if derive_state:
+            timeline = data.get("timeline")
+            if isinstance(timeline, list):
+                for entry in reversed(timeline):
+                    if isinstance(entry, Mapping):
+                        event = entry.get("event")
+                        if isinstance(event, str) and event in _STATE_EVENTS:
+                            data["state"] = _STATE_EVENTS[event]
+                            break
         return cls(run_dir, data)
 
     # ---- reading ----------------------------------------------------------
@@ -171,6 +180,8 @@ class Manifest:
         self._data["timeline"].append(entry)
         if event in _STATE_EVENTS:
             self._data["state"] = _STATE_EVENTS[event]
+        if event in {"resumed", "finished", "incomplete"}:
+            self._data["failure"] = None
         self.flush()
 
     def record_lifecycle_event(self, event: str, **extra: Any) -> None:
@@ -267,8 +278,28 @@ class Manifest:
         self._data["artifacts"][name] = str(path)
         self.flush()
 
-    def record_progress(self, **fields: Any) -> None:
-        self._data["progress"] = {**fields, "updated": _now()}
+    def record_progress(
+        self, fields: Mapping[str, Any] | None = None, /, **kwargs: Any
+    ) -> None:
+        """Merge progress keys incrementally into ``manifest["progress"]``."""
+        merged = dict(self._data.get("progress") or {})
+        if fields is not None:
+            merged.update(fields)
+        merged.update(kwargs)
+        merged["updated"] = _now()
+        self._data["progress"] = merged
+        self.flush()
+
+    def set_progress(
+        self, fields: Mapping[str, Any] | None = None, /, **kwargs: Any
+    ) -> None:
+        """Replace ``manifest["progress"]`` wholesale."""
+        replaced: dict[str, Any] = {}
+        if fields is not None:
+            replaced.update(fields)
+        replaced.update(kwargs)
+        replaced["updated"] = _now()
+        self._data["progress"] = replaced
         self.flush()
 
     def record_best(
@@ -293,20 +324,30 @@ class Manifest:
         }
         self.flush()
 
-    def record_parent(self, *, run_dir: str | Path, config_hash: str, artifact: str) -> None:
-        """Record that this run continues another.
+    def record_parent(
+        self,
+        *,
+        run_dir: str | Path,
+        config_hash: str,
+        artifact: str,
+        artifact_key: str | None = None,
+    ) -> None:
+        """Record that this run forks from another.
 
-        Continuing a finished run makes a *new* run: a directory whose artifacts
+        Forking a finished run makes a *new* run: a directory whose artifacts
         came from one configuration for 100 epochs and another for 50 more has no
         honest configuration identity. Whether the child restores training state or
         only loads weights shows up in the child's own configuration; Honbu records
         the link and nothing about its meaning.
         """
-        self._data["parent"] = {
+        record: dict[str, Any] = {
             "run_dir": str(run_dir),
             "config_hash": config_hash,
             "artifact": artifact,
         }
+        if artifact_key is not None:
+            record["artifact_key"] = artifact_key
+        self._data["parent"] = record
         self.flush()
 
     def record_failure(self, *, kind: str, message: str, interrupted: bool) -> None:
@@ -316,7 +357,11 @@ class Manifest:
         too — so the split is on who stopped it.
         """
         self._data["failure"] = {"kind": kind, "message": message}
-        self._append_event("interrupted" if interrupted else "error")
+        self._append_event(
+            "interrupted" if interrupted else "error",
+            kind=kind,
+            message=message,
+        )
 
     def record_outcome(self, *, outstanding: Sequence[str] = ()) -> None:
         """Close a producing invocation that returned without raising.

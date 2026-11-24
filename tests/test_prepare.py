@@ -17,13 +17,12 @@ from honbu import (
     OutputBlock,
     PortablePath,
     RefusalError,
-    ResolvedPath,
     ResolvedString,
     RuntimeConfig,
     StrictModel,
-    TemplateContext,
     TemplatedIdentity,
 )
+from honbu.core import TemplateContext
 from honbu.sweeps import (
     CHILD_COORDINATE_NAME,
     SWEEP_INDEX_NAME,
@@ -62,7 +61,6 @@ class Runtime(RuntimeConfig):
 
 
 class Outputs(OutputBlock):
-    dir: ResolvedPath = None
     dir_template: str | None = "{runtime.sweep_id}/{runtime.config_id}"
 
 
@@ -569,3 +567,191 @@ def test_a_producing_command_refuses_an_active_block():
 
 def test_a_producing_command_runs_normally_with_an_inert_block():
     refuse_active_sweep_block({"sweep": {"gate": "runtime.config_id"}}, invocation="train")
+
+
+# --- 7.10 prepare_sweep upgrades ---------------------------------------------
+
+
+def test_assign_path_supports_sequence_indices():
+    node = {"items": [{"lr": 0.1}, {"lr": 0.2}]}
+    assign_path(node, "items.1.lr", 0.5)
+    assert node == {"items": [{"lr": 0.1}, {"lr": 0.5}]}
+
+
+def test_cross_field_validator_rejection_skips_while_field_typo_refuses(tmp_path):
+    from pydantic import model_validator
+
+    class ValidatedRoot(Root):
+        batch_size: int = 4
+
+        @model_validator(mode="after")
+        def _check_combo(self) -> ValidatedRoot:
+            if self.epochs == 20 and self.batch_size == 8:
+                raise ValueError("epochs=20 incompatible with batch_size=8")
+            return self
+
+    hashes = HashRegistry(
+        [FieldHash("config_hash", include=["experiment", "epochs", "lr", "batch_size"])],
+        root_type=ValidatedRoot,
+    )
+    composed = {
+        "experiment": {"name": "reef"},
+        "epochs": 10,
+        "lr": 0.1,
+        "batch_size": 4,
+        "sweep": {
+            "gate": "runtime.config_id",
+            "axes": {"epochs": [10, 20], "batch_size": [4, 8]},
+        },
+    }
+    sweep_dir = tmp_path / "sweeps" / "skip_test"
+    prep = prepare_sweep(
+        composed,
+        sweep_dir=sweep_dir,
+        root_type=ValidatedRoot,
+        command=TRAIN,
+        hashes=hashes,
+        cwd=tmp_path,  # also exercises default context=None
+    )
+    assert len(prep.children) == 3
+    assert len(prep.skipped) == 1
+    assert prep.skipped[0].values == {"epochs": 20, "batch_size": 8}
+    assert any("skipped child" in w for w in prep.warnings)
+    index = read_sweep_index(sweep_dir)
+    assert len(index["skipped"]) == 1
+    assert (sweep_dir / CONFIG_DIRNAME / "composed.yaml").is_file()
+
+    # Zero valid combinations refused
+    all_bad = {
+        **composed,
+        "sweep": {
+            "gate": "runtime.config_id",
+            "axes": {"epochs": [20], "batch_size": [8]},
+        },
+    }
+    with pytest.raises(RefusalError, match="zero valid children remain"):
+        prepare_sweep(
+            all_bad,
+            sweep_dir=tmp_path / "sweeps" / "all_bad",
+            root_type=ValidatedRoot,
+            command=TRAIN,
+            hashes=hashes,
+            cwd=tmp_path,
+        )
+
+    # Field-level type typo is STILL refused outright (not skipped)
+    typo = {
+        **composed,
+        "sweep": {"gate": "runtime.config_id", "axes": {"epochs": [10, "not-an-int"]}},
+    }
+    with pytest.raises(RefusalError, match="failed schema validation"):
+        prepare_sweep(
+            typo,
+            sweep_dir=tmp_path / "sweeps" / "typo",
+            root_type=ValidatedRoot,
+            command=TRAIN,
+            hashes=hashes,
+            cwd=tmp_path,
+        )
+
+
+def test_sweep_output_block_target_resolution_and_swept_axis_refusal(tmp_path):
+    from honbu import OutputLeaf
+    from honbu.sweeps import SweepOutputBlock
+
+    class MySweepOutputs(SweepOutputBlock):
+        dir_template: str | None = "sweeps/{experiment.name:slug}"
+        summary: OutputLeaf = Field(default_factory=lambda: OutputLeaf(dir="summary"))
+        plots: OutputLeaf = Field(default_factory=lambda: OutputLeaf(enabled=False, dir="plots"))
+
+    class SweepOutRoot(Root):
+        sweep_outputs: MySweepOutputs = Field(default_factory=MySweepOutputs)
+
+    sweep_target = TargetSpec(
+        "sweep_outputs.dir_template", "sweep_outputs.dir", "output_root"
+    )
+    composed = {
+        "experiment": {"name": "reef v3"},
+        "epochs": 10,
+        "lr": 0.1,
+        "sweep": {"gate": "runtime.config_id", "axes": {"epochs": [10, 20]}},
+    }
+    prep = prepare_sweep(
+        composed,
+        sweep_target=sweep_target,
+        root_type=SweepOutRoot,
+        command=TRAIN,
+        hashes=HASHES,
+        cwd=tmp_path,
+    )
+    assert prep.sweep_dir == (tmp_path / "runs" / "sweeps" / "reef-v3").resolve()
+    assert prep.sweep_resolution is not None
+    assert (prep.sweep_dir / "config" / "composed.yaml").is_file()
+    assert (prep.sweep_dir / "config" / "resolved.yaml").is_file()
+    assert (prep.sweep_dir / "config" / "index.json").is_file()
+
+    # Refuses sweep_outputs.dir_template referencing a swept axis path
+    bad_tpl = {
+        **composed,
+        "sweep_outputs": {"dir_template": "sweeps/{epochs}"},
+    }
+    with pytest.raises(RefusalError, match="references swept axis path"):
+        prepare_sweep(
+            bad_tpl,
+            sweep_target=sweep_target,
+            root_type=SweepOutRoot,
+            command=TRAIN,
+            hashes=HASHES,
+            cwd=tmp_path,
+        )
+
+
+def test_prepare_sweep_built_in_compose_spec_and_child_warnings_deduplicated(tmp_path):
+    class DataCfg(StrictModel):
+        name: str
+        uri: PortablePath
+
+    class GroupRoot(Root):
+        data: DataCfg
+
+    (tmp_path / "configs" / "data").mkdir(parents=True)
+    (tmp_path / "configs" / "config.yaml").write_text(
+        "defaults:\n  - _self_\n  - data: a\nexperiment:\n  name: 'bad:name'\nepochs: 10\nlr: 0.1\n"
+    )
+    (tmp_path / "configs" / "data" / "a.yaml").write_text("name: a\nuri: /data/a\n")
+    (tmp_path / "configs" / "data" / "b.yaml").write_text("name: b\nuri: /data/b\n")
+
+    class WarnOutputs(OutputBlock):
+        dir_template: str | None = "{experiment.name}/{runtime.config_id}"
+
+    class WarnGroupRoot(GroupRoot):
+        outputs: WarnOutputs = Field(default_factory=WarnOutputs)
+
+    spec = ComposeSpec(packaged=None, local="configs")
+    hashes = HashRegistry(
+        [FieldHash("config_hash", include=["experiment", "epochs", "lr", "data"])],
+        root_type=WarnGroupRoot,
+    )
+    # Non-sweep override lr=0.25 must be forwarded to every child!
+    composed = compose_config(
+        spec,
+        overrides=["lr=0.25", "sweep.gate=runtime.config_id", "sweep.axes.data=[a,b]"],
+        cwd=tmp_path,
+    )
+    prep = prepare_sweep(
+        composed,
+        sweep_dir=tmp_path / "sweeps" / "grp",
+        root_type=WarnGroupRoot,
+        command=TRAIN,
+        hashes=hashes,
+        compose_spec=spec,
+        overrides=["lr=0.25", "sweep.gate=runtime.config_id", "sweep.axes.data=[a,b]"],
+        cwd=tmp_path,
+    )
+    # Child warnings preserved and deduplicated (bad:name sanitized across children)
+    sanit_warnings = [w for w in prep.warnings if "bad:name" in w]
+    assert len(sanit_warnings) == 1
+    # Verify non-sweep override lr=0.25 reached every child
+    for child in prep.children:
+        resolved_text = (child.run_dir / "config" / "resolved.yaml").read_text()
+        assert "lr: 0.25" in resolved_text

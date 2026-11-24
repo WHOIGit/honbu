@@ -8,13 +8,17 @@ exists to remove.
 
 ::: honbu.core.model
 
+::: honbu.core.blocks
+    options:
+      members: [ExperimentConfig, RuntimeConfig, HashedRuntimeConfig, OutputBlock, OutputLeaf, validate_root_contract]
+
 ::: honbu.core.markers
     options:
-      members: [check_field_path, field_marker, identity_bindings]
+      members: [check_field_path, field_marker, identity_bindings, unmarked_path_fields]
 
 ::: honbu.core.hashes
     options:
-      members: [HashRegistry, FieldHash, SourceHash, ByteHash, FannedHash, HashEntry, HashResult]
+      members: [HashRegistry, FieldHash, SourceHash, ByteHash, FannedHash, HashEntry, HashResult, project_fields, project_model]
 
 ::: honbu.core.paths
     options:
@@ -30,13 +34,21 @@ exists to remove.
 
 ## Flow
 
+::: honbu.flow.project
+    options:
+      members: [ProjectSpec]
+
 ::: honbu.flow.commands
     options:
-      members: [CommandSpec, TargetSpec, StepSpec, Positional, CommandRegistry, parse_invocation]
+      members: [CommandSpec, TargetSpec, StepSpec, CommandRegistry]
 
 ::: honbu.flow.compose
     options:
-      members: [ComposeSpec, compose_config, compose_file, build_search_path, split_argv, check_overrides, sweep_is_active, refuse_active_sweep_block]
+      members: [ComposeSpec, compose_config, compose_file, build_search_path, check_overrides, sweep_is_active, refuse_active_sweep_block]
+
+::: honbu.flow.load
+    options:
+      members: [LoadedConfig, load_config, parent_record]
 
 ::: honbu.flow.resolve
     options:
@@ -44,38 +56,48 @@ exists to remove.
 
 ::: honbu.flow.run
     options:
-      members: [Run, open_run]
+      members: [Run, open_run, initialize_run]
 
 ::: honbu.flow.manifest
     options:
       members: [Manifest]
 
-::: honbu.flow.harness
+## CLI
+
+::: honbu.cli.helpers
     options:
-      members: [Application, dispatch_command, Handler, load_composed]
+      members: [CONVENTIONAL_FLAGS, DashRuleSplit, split_dash_rule, validate_override_tokens, select_config_source, exit_on_refusal, emit_warnings]
+
+::: honbu.cli.presets
+    options:
+      members: [HYDRA_CONTEXT_SETTINGS, config_option, resolved_option, fork_from_option, fork_artifact_option, config_dirs_option, clobber_option, resume_option, build_materialize_command, build_compare_command]
 
 ## Operations
 
 ::: honbu.sweeps.definitions
     options:
-      members: [SweepBlock, SweepDeclaration, Axis, AxisOption, Coordinate, check_root_declares_sweep, declared_block_type, sweep_block_of, without_sweep_block]
+      members: [SweepBlock, SweepDeclaration, SweepOutputBlock, Axis, AxisOption, Coordinate, check_root_declares_sweep, declared_block_type, sweep_block_of, without_sweep_block]
 
 ::: honbu.sweeps.plan
     options:
-      members: [SweepPlan, plan_sweep]
+      members: [SweepPlan, plan_sweep, sweep_composers]
 
 ::: honbu.sweeps.prepare
     options:
-      members: [Preparation, PreparedChild, prepare_sweep, sweep_identity, read_sweep_index]
+      members: [Preparation, PreparedChild, SkippedChild, prepare_sweep, sweep_identity, read_sweep_index]
 
 ::: honbu.sweeps.progress
     options:
-      members: [SweepStatus, ChildStatus, ExecutionResult, execute_sweep, child_argv, scan_sweep, refresh_sweep]
+      members: [SweepStatus, ChildStatus, ExecutionResult, FailedChild, execute_sweep, child_argv, scan_sweep, refresh_sweep]
 
 ::: honbu.compare.configs
     options:
-      members: [ConfigOperand, Comparison, Difference, compare_configs, compare_operands, render_comparison]
+      members: [ConfigOperand, Comparison, Difference, HashComparison, compare_configs, compare_operands, render_comparison]
+
+::: honbu.compare.runs
+    options:
+      members: [Objective, ReconciliationResult, GateCheck, CompatibilityReport, RankedRun, UnrankedRun, RunComparison, reconcile_hash, check_run_compatibility, compare_runs, compare_sweep, render_run_comparison]
 
 ::: honbu.materialize.trees
     options:
-      members: [MaterializationPlan, MaterializationRoot, MaterializationScope, MaterializedFile, plan_config_materialization, plan_materialization, apply_materialization]
+      members: [MaterializationPlan, MaterializationRoot, MaterializationScope, MaterializedFile, FileDrift, plan_materialization, apply_materialization, render_plan, compare_materialized_config, materialized_file_drift, render_file_drift]

@@ -33,10 +33,12 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field
 
 from honbu.errors import RefusalError
+from honbu.core.blocks import OutputBlock
 from honbu.core.markers import (
     DIRECTIVE,
     DirectiveMarker,
     field_marker,
+    traversable_submodel,
 )
 from honbu.core.model import StrictModel
 
@@ -79,6 +81,18 @@ class SweepBlock(StrictModel):
         "asked for" have to be different questions.
         """
         return bool(self.axes or self.covariant_axes)
+
+
+class SweepOutputBlock(OutputBlock):
+    """Opt-in output block preset for a sweep directory and its reporting leaves.
+
+    Peer to a run's :class:`~honbu.core.blocks.OutputBlock` and deliberately NOT
+    required by :func:`~honbu.core.blocks.validate_root_contract`. Projects
+    wanting config-driven sweep directory templating and reporting
+    :class:`~honbu.core.blocks.OutputLeaf` directories add a field of this type
+    (or a subclass) to their root schema and pass ``sweep_target`` to
+    :func:`~honbu.sweeps.prepare_sweep`.
+    """
 
 
 @dataclass(frozen=True)
@@ -172,19 +186,14 @@ def check_root_declares_sweep(root_type: type[BaseModel]) -> None:
 def declared_block_type(root_type: type[BaseModel]) -> type[SweepBlock]:
     """The block type this project declared, which may add fields to Honbu's.
 
-    The block is the one place a sweep is declared, and where a project's sweeps go
-    or what to call this one are declarations of the same kind. Validating the raw
-    mapping against :class:`SweepBlock` regardless would refuse those fields as extra
-    inputs — making "the block is the single sweep definition" true of Honbu's half
-    of it only.
-
-    Strictness is not what is being relaxed. A subclass is strict too, so a
-    misspelled key is still refused; it is refused against the schema that actually
-    applies rather than against a stricter one the project did not write.
+    Unwraps ``Annotated`` and ``Optional``/unions via
+    :func:`~honbu.core.markers.traversable_submodel` so a project subclass
+    declared as ``Annotated[MySweepBlock | None, DIRECTIVE]`` still validates
+    through ``MySweepBlock`` rather than falling back to :class:`SweepBlock`.
     """
     info = root_type.model_fields.get(SWEEP_BLOCK)
-    declared = getattr(info, "annotation", None) if info is not None else None
-    if isinstance(declared, type) and issubclass(declared, SweepBlock):
+    declared = traversable_submodel(info.annotation) if info is not None else None
+    if declared is not None and issubclass(declared, SweepBlock):
         return declared
     return SweepBlock
 

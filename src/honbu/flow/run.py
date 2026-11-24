@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -33,15 +33,18 @@ import yaml
 from honbu.errors import RefusalError
 from honbu.flow.commands import CommandSpec
 from honbu.flow.manifest import Manifest
+from honbu.flow.project import ProjectSpec
 from honbu.flow.resolve import Resolution, anchor
-from honbu.core.blocks import OutputBlock, OutputLeaf
+from honbu.core.blocks import CONFIG_HASH_NAME, OutputBlock, OutputLeaf
 from honbu.core.canonical import canonical_bytes, hash_source
 from honbu.core.hashes import (
     HashEntry,
     HashRegistry,
+    read_hash_entries,
     write_hash_entries,
 )
 from honbu.core.io import atomic_write_text
+from honbu.core.paths import is_absolute_uri
 from honbu.core.targets import (
     RESUMABLE_STATES,
     clear_contents,
@@ -94,6 +97,7 @@ class Run:
     invocation: int
     resuming: bool = False
     clobber: bool = False
+    warnings: tuple[str, ...] = ()
     _active_step: str | None = field(default=None, repr=False)
     _completed: frozenset[str] = field(default_factory=frozenset, repr=False)
 
@@ -111,10 +115,11 @@ class Run:
     @property
     def deferred(self) -> tuple[str, ...]:
         """Declared hashes still awaiting their inputs."""
+        recorded = self.manifest.data["hashes"]
         return tuple(
             name
             for name in self.resolution.deferred
-            if name not in self.manifest.data["hashes"]
+            if name not in recorded and not any(k.startswith(f"{name}.") for k in recorded)
         )
 
     @property
@@ -130,6 +135,33 @@ class Run:
     def best(self) -> Mapping[str, Any] | None:
         return self.manifest.data.get("best")
 
+    def hash_entry(self, name: str) -> HashEntry | None:
+        """A resolved or completed hash artifact by entry id, or None if unavailable.
+
+        Symmetric with :meth:`artifact`: works for both Wave 1 resolved hashes and
+        Wave 2 deferred hashes completed via :meth:`complete_hash` (including fanned
+        ``<name>.<key>`` entries), across fresh runs and ``--resume``.
+        """
+        entry = read_hash_entries(self.config_dir).get(name)
+        if entry is not None:
+            return entry
+        if name in self.resolution.hashes:
+            return self.resolution.hashes[name]
+        primary = config_dir_for(self.run_dir, 1)
+        if primary != self.config_dir:
+            return read_hash_entries(primary).get(name)
+        return None
+
+    def hash(self, name: str) -> str | None:
+        """The digest string for ``name`` (or ``<name>.<key>``), or None if absent."""
+        entry = self.hash_entry(name)
+        if entry is not None:
+            return entry.value
+        recorded = self.manifest.data["hashes"].get(name)
+        if isinstance(recorded, Mapping) and recorded.get("value") is not None:
+            return str(recorded["value"])
+        return None
+
     def artifact(self, name: str) -> Path | None:
         """A registered artifact as an absolute path, or None if never registered.
 
@@ -141,7 +173,9 @@ class Run:
         if stored is None:
             return None
         candidate = Path(stored)
-        return candidate if candidate.is_absolute() else self.run_dir / candidate
+        if candidate.is_absolute() or is_absolute_uri(stored):
+            return candidate
+        return self.run_dir / candidate
 
     def skip(self, step: str) -> bool:
         """Whether a resumed run has already completed this step.
@@ -253,7 +287,14 @@ class Run:
             for entry_id, entry in result.entries.items()
         }
         write_hash_entries(self.config_dir, entries)
+        preserve_existing = (
+            self.command.mode == "augment"
+            and self.config_dir != config_dir_for(self.run_dir, 1)
+        )
+        existing_hashes = self.manifest.data["hashes"]
         for entry_id, entry in entries.items():
+            if preserve_existing and entry_id in existing_hashes:
+                continue
             self.manifest.record_hash(
                 entry_id,
                 entry.value,
@@ -304,8 +345,15 @@ class Run:
     def record_identity(self, name: str, value: Any) -> None:
         self.manifest.record_identity(name, value)
 
-    def record_progress(self, **fields: Any) -> None:
-        self.manifest.record_progress(**fields)
+    def record_progress(
+        self, fields: Mapping[str, Any] | None = None, /, **kwargs: Any
+    ) -> None:
+        self.manifest.record_progress(fields, **kwargs)
+
+    def set_progress(
+        self, fields: Mapping[str, Any] | None = None, /, **kwargs: Any
+    ) -> None:
+        self.manifest.set_progress(fields, **kwargs)
 
     def record_best(self, **fields: Any) -> None:
         self.manifest.record_best(**fields)
@@ -323,14 +371,15 @@ def _scope_dirs(resolution: Resolution, scope: Sequence[str]) -> Iterator[Path]:
     """Absolute directories for declared scope paths.
 
     Reads the absolute view, so a leaf already joined to its block's directory
-    comes back usable rather than as a bare relative name.
+    comes back usable rather than as a bare relative name. Disabled leaves
+    (``enabled=False``) are skipped so they are neither created nor cleared.
     """
     for dotted in scope:
         current: Any = resolution.config
         for segment in dotted.split("."):
             current = getattr(current, segment)
         if isinstance(current, OutputLeaf):
-            if current.dir is not None:
+            if current.enabled and current.dir is not None:
                 yield current.dir
         elif isinstance(current, OutputBlock):
             if current.dir is not None:
@@ -360,10 +409,13 @@ def initialize_run(
     resolution: Resolution,
     *,
     composed: Mapping[str, Any],
-    hashes: HashRegistry,
-    argv_text: str,
+    hashes: HashRegistry | None = None,
+    argv_text: str = "",
     clobber: bool = False,
     parent: Mapping[str, Any] | None = None,
+    config_hash_name: str | None = None,
+    cli_hint: str | None = None,
+    project: ProjectSpec | None = None,
 ) -> Run:
     """Prepare the target and persist the bundle, without starting work.
 
@@ -384,6 +436,10 @@ def initialize_run(
         clobber=clobber,
         resume=False,
         parent=parent,
+        allow_config_drift=False,
+        config_hash_name=config_hash_name,
+        cli_hint=cli_hint,
+        project=project,
     )
 
 
@@ -392,11 +448,15 @@ def open_run(
     resolution: Resolution,
     *,
     composed: Mapping[str, Any],
-    hashes: HashRegistry,
-    argv_text: str,
+    hashes: HashRegistry | None = None,
+    argv_text: str = "",
     clobber: bool = False,
     resume: bool = False,
     parent: Mapping[str, Any] | None = None,
+    allow_config_drift: bool = False,
+    config_hash_name: str | None = None,
+    cli_hint: str | None = None,
+    project: ProjectSpec | None = None,
 ) -> Iterator[Run]:
     """Prepare the target, persist the bundle, and yield the live run.
 
@@ -419,6 +479,10 @@ def open_run(
         clobber=clobber,
         resume=resume,
         parent=parent,
+        allow_config_drift=allow_config_drift,
+        config_hash_name=config_hash_name,
+        cli_hint=cli_hint,
+        project=project,
     )
     manifest = run.manifest
 
@@ -457,15 +521,54 @@ def open_run(
         manifest.record_outcome(outstanding=run.outstanding_steps())
 
 
+def _preserve_resumed_run_id(
+    resolution: Resolution,
+    manifest: Manifest,
+    composed: Mapping[str, Any],
+) -> Resolution:
+    """Keep the run's recorded ``run_id`` on resume unless explicitly pinned.
+
+    Prevents resuming a deterministic-target run from default configuration from
+    minting a fresh random ``run_id`` and allocating a spurious ``config/2/``.
+    """
+    saved_run_id = (manifest.data.get("identities") or {}).get("run_id")
+    if saved_run_id is None:
+        return resolution
+    runtime_composed = composed.get("runtime")
+    authored_run_id = (
+        runtime_composed.get("run_id") if isinstance(runtime_composed, Mapping) else None
+    )
+    # Respect an explicit literal override (e.g. runtime.run_id=custom), while
+    # preserving the recorded run_id when omitted or still a template string.
+    if authored_run_id is not None and "{" not in str(authored_run_id):
+        return resolution
+    if not (
+        hasattr(resolution.portable, "runtime")
+        and hasattr(resolution.portable.runtime, "run_id")
+    ):
+        return resolution
+    if resolution.portable.runtime.run_id == saved_run_id:
+        return resolution
+    portable = resolution.portable.model_copy(deep=True)
+    portable.runtime.run_id = saved_run_id
+    config = resolution.config.model_copy(deep=True)
+    config.runtime.run_id = saved_run_id
+    return replace(resolution, portable=portable, config=config)
+
+
 def _prepare(
     resolution: Resolution,
     *,
     composed: Mapping[str, Any],
-    hashes: HashRegistry,
+    hashes: HashRegistry | None,
     argv_text: str,
     clobber: bool,
     resume: bool,
     parent: Mapping[str, Any] | None,
+    allow_config_drift: bool,
+    config_hash_name: str | None,
+    cli_hint: str | None,
+    project: ProjectSpec | None,
 ) -> Run:
     """Everything both entry points do: target, manifest, bundle, invocation."""
     command = resolution.command
@@ -473,6 +576,23 @@ def _prepare(
         raise RefusalError(
             f"{command.invocation} declares no target, so it has no run to open"
         )
+    if clobber and resume:
+        raise RefusalError("clobber and resume are mutually exclusive; choose one")
+    if command.mode == "augment" and resume:
+        raise RefusalError(
+            f"{command.invocation} is an augmenting command and cannot use resume=True"
+        )
+
+    resolved_hashes = (
+        hashes
+        if hashes is not None
+        else (project.hashes if project is not None else HashRegistry([]))
+    )
+    hash_name = (
+        config_hash_name
+        if config_hash_name is not None
+        else (project.config_hash_name if project is not None else CONFIG_HASH_NAME)
+    )
 
     run_dir = resolution.target
     containment = _containment_root(resolution)
@@ -485,6 +605,7 @@ def _prepare(
                 _scope_paths_for(resolution, command.scope),
                 containment_root=containment,
                 clobber=clobber,
+                cli_hint=cli_hint,
             )
         )
         manifest = Manifest.load(run_dir)
@@ -492,16 +613,37 @@ def _prepare(
         existing = read_existing_manifest(run_dir)
         if existing is None:
             raise RefusalError(f"nothing to resume in {run_dir}")
-        state = existing.get("state")
+        manifest = Manifest.load(run_dir)
+        state = manifest.state
         if state not in RESUMABLE_STATES:
             raise RefusalError(
                 f"cannot resume a {state} run in {run_dir}; start a fresh run from "
                 f"{run_dir / CONFIG_DIRNAME / COMPOSED_NAME}"
             )
-        manifest = Manifest.load(run_dir)
+        if not allow_config_drift:
+            recorded = (manifest.data.get("hashes") or {}).get(hash_name)
+            recorded_value = (
+                recorded.get("value") if isinstance(recorded, Mapping) else None
+            )
+            current_value = resolution.digests.get(hash_name)
+            if (
+                recorded_value is not None
+                and current_value is not None
+                and recorded_value != current_value
+            ):
+                raise RefusalError(
+                    f"cannot resume {run_dir}: behavioral {hash_name} changed "
+                    f"({recorded_value} -> {current_value}). Fork from this run "
+                    "(--fork-from) to start a new run with lineage, clobber "
+                    "(--clobber) to replace it, or pass allow_config_drift=True."
+                )
+        resolution = _preserve_resumed_run_id(resolution, manifest, composed)
     else:
         run_dir, target_warnings = prepare_target(
-            run_dir, containment_root=containment, clobber=clobber
+            run_dir,
+            containment_root=containment,
+            clobber=clobber,
+            cli_hint=cli_hint,
         )
         warnings.extend(target_warnings)
         manifest = Manifest.create(
@@ -513,7 +655,11 @@ def _prepare(
     if is_new or not (config_dir / RESOLVED_NAME).is_file():
         write_bundle(config_dir, composed=composed, resolution=resolution)
 
+    preserve_existing = command.mode == "augment" and index > 1
+    existing_hashes = manifest.data["hashes"]
     for name, entry in resolution.hashes.items():
+        if preserve_existing and name in existing_hashes:
+            continue
         manifest.record_hash(
             name, entry.value, version=entry.version, provenance=entry.provenance
         )
@@ -522,7 +668,7 @@ def _prepare(
         command=command.name,
         argv=argv_text,
         config_index=index,
-        config_hash=resolution.digests.get("config_hash"),
+        config_hash=resolution.digests.get(hash_name),
     )
     if parent is not None:
         manifest.record_parent(**dict(parent))
@@ -532,11 +678,12 @@ def _prepare(
         manifest=manifest,
         run_dir=run_dir,
         config_dir=config_dir,
-        hashes=hashes,
+        hashes=resolved_hashes,
         invocation=invocation,
         resuming=resume,
         clobber=clobber,
-        _completed=manifest.completed_steps(),
+        warnings=tuple(warnings),
+        _completed=manifest.satisfied_steps(),
     )
 
 

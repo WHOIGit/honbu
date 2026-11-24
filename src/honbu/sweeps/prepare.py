@@ -4,7 +4,9 @@ Preparation is deliberately a separate act from execution. Everything that can b
 wrong about a sweep — a bad path, a gate that gates nothing, two children sharing a
 directory — is wrong before any work starts, and finding out at child seven means
 seven trainings that have to be thrown away. So the matrix is expanded, every child
-resolved, the gate checked across all of them, and only then is anything written.
+resolved (skipping cross-field ``@model_validator`` rejections while refusing
+field-level typos), the gate checked across all of them, and only then is anything
+written.
 
 What is written is ordinary. A child is a run directory in the ``initialized``
 state: a manifest, a configuration bundle, resolved hashes, and nothing else. It is
@@ -12,10 +14,10 @@ reachable by exactly the same call as any other run — identify the directory, 
 to resume — which is why execution can be a ``for`` loop and why a scheduler array
 over the child directories needs no glue.
 
-Re-preparation is idempotent. An existing child is left exactly as it is, including
-a completed one, because preparing a sweep again is what you do after adding an
-axis and the last thing you want is for it to clear the eleven children that
-already ran.
+Re-preparation is idempotent and extensible in place (D29). An existing child is
+left untouched, growing an axis adds only the new children under the same
+``sweep_id``, and removing an axis value retires its child in the index without
+deleting its directory.
 """
 
 from __future__ import annotations
@@ -26,69 +28,80 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+import yaml
+from pydantic import BaseModel, ValidationError
 
-from honbu.sweeps.gate import check_gate, require_gate
-from honbu.sweeps.definitions import SWEEP_BLOCK, Coordinate, SweepBlock, without_sweep_block
-from honbu.sweeps.plan import SweepPlan, plan_sweep
-from honbu.errors import RefusalError
-from honbu.flow.commands import CommandSpec
-from honbu.flow.resolve import Resolution, resolve
-from honbu.flow.run import CONFIG_DIRNAME, initialize_run
 from honbu.core.hashes import HashRegistry
 from honbu.core.identifiers import deterministic_id
-from honbu.core.io import atomic_write_json
+from honbu.core.io import atomic_write_json, atomic_write_text
 from honbu.core.markers import parse_dotted
 from honbu.core.targets import MANIFEST_NAME
-from honbu.core.templates import TemplateContext
+from honbu.core.templates import TemplateContext, TemplateRegistry, template_value_paths
+from honbu.errors import DeclarationError, RefusalError
+from honbu.flow.commands import CommandSpec, TargetSpec, field_default
+from honbu.flow.compose import ComposeSpec
+from honbu.flow.project import ProjectSpec
+from honbu.flow.resolve import Resolution, resolve
+from honbu.flow.run import (
+    COMPOSED_NAME,
+    CONFIG_DIRNAME,
+    RESOLVED_NAME,
+    initialize_run,
+)
+from honbu.sweeps.definitions import (
+    SWEEP_BLOCK,
+    Coordinate,
+    SweepBlock,
+    without_sweep_block,
+)
+from honbu.sweeps.gate import check_gate, require_gate
+from honbu.sweeps.plan import SweepPlan, plan_sweep, sweep_composers
 
 #: The child's own record of what produced it, beside its configuration bundle.
-#: In the configuration directory rather than the manifest because it describes the
-#: configuration — it is the desugared form of the axes, legible without
-#: re-deriving the matrix from the sweep definition.
 CHILD_COORDINATE_NAME = "sweep.json"
 
 #: The sweep's immutable record of its children.
 SWEEP_INDEX_NAME = "index.json"
 
-#: The domain the sweep identity is seeded in, so a definition digest labelled for
-#: another purpose cannot collide into the same name.
+#: The domain the sweep identity is seeded in, so a path labelled for another
+#: purpose cannot collide into the same name.
 SWEEP_ID_DOMAIN = "sweep"
 
-#: Composes one child, given the group selections it requires. Preparation supplies
-#: nothing else: selections must reach the compositor, while ordinary assignments
-#: are applied afterwards to the dict it returns.
+#: Composes one child, given the group selections it requires.
 ComposeChild = Callable[[Mapping[str, str]], dict[str, Any]]
 
 
-def assign_path(node: dict[str, Any], dotted: str, value: Any) -> None:
-    """Set a dotted path in a composed tree, creating intermediates as needed.
+def _dump_yaml(payload: Mapping[str, Any]) -> str:
+    return yaml.safe_dump(dict(payload), sort_keys=False, default_flow_style=False)
 
-    Creating intermediates is safe here only because axis-path validation has
-    already run: every concrete container key on the path was confirmed present in
-    the composed configuration, so nothing this creates is a fabricated entry. What
-    it does create is the ordinary case of a leaf whose value came from a schema
-    default and so was never written down.
+
+def assign_path(node: dict[str, Any], dotted: str, value: Any) -> None:
+    """Set a dotted path (supporting sequence indices) in a composed tree.
+
+    Creating intermediate dicts is safe here only because axis-path validation has
+    already run: every concrete container key or sequence index on the path was
+    confirmed present in the composed configuration.
     """
-    current = node
+    current: Any = node
     segments = parse_dotted(dotted, allow_index=True)
     for segment in segments[:-1]:
-        nxt = current.get(segment)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            current[segment] = nxt
-        current = nxt
-    current[segments[-1]] = value
+        if isinstance(current, list):
+            current = current[int(segment)]
+        else:
+            nxt = current.get(segment)
+            if not isinstance(nxt, (dict, list)):
+                nxt = {}
+                current[segment] = nxt
+            current = nxt
+    last = segments[-1]
+    if isinstance(current, list):
+        current[int(last)] = value
+    else:
+        current[last] = value
 
 
 def child_configuration(base: Mapping[str, Any], coordinate: Coordinate) -> dict[str, Any]:
-    """One child's composed configuration: the base, with its axes applied.
-
-    The sweep block is removed here, which is what makes a child's digests equal
-    those of the same configuration invoked by hand. It is not the whole of that
-    guarantee — the block is excluded from digests by its marker regardless (D28),
-    since a base configuration may legitimately carry one during an ordinary run.
-    """
+    """One child's composed configuration: the base, with its axes applied."""
     config = without_sweep_block(base)
     for path, value in coordinate.assignments.items():
         assign_path(config, path, deepcopy(value))
@@ -119,6 +132,22 @@ class PreparedChild:
 
 
 @dataclass(frozen=True)
+class SkippedChild:
+    """A sweep combination rejected by a project cross-field model validator."""
+
+    index: int
+    values: Mapping[str, Any]
+    reason: str
+
+    def as_index_entry(self) -> dict[str, Any]:
+        return {
+            "index": self.index,
+            "values": dict(self.values),
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
 class Preparation:
     """The result of preparing a sweep: what exists, and what it is."""
 
@@ -129,9 +158,11 @@ class Preparation:
     children: tuple[PreparedChild, ...]
     warnings: tuple[str, ...]
     #: Index entries from a previous definition that this one no longer covers.
-    #: Kept, never deleted — a completed child's results stay reachable, and a sweep
-    #: that once covered a value can say so.
     retired: tuple[Mapping[str, Any], ...] = ()
+    #: Combinations skipped by project cross-field ``@model_validator`` rejections.
+    skipped: tuple[SkippedChild, ...] = ()
+    #: Resolution of ``SweepOutputBlock`` when ``sweep_target`` was used.
+    sweep_resolution: Resolution | None = None
 
     def __len__(self) -> int:
         return len(self.children)
@@ -142,25 +173,59 @@ class Preparation:
 
 
 def sweep_identity(sweep_dir: Path) -> str:
-    """A human-readable identity for the sweep living in a directory.
+    """A human-readable identity for the sweep living in a directory (D29).
 
-    A sweep is anchored by its directory, exactly as a run is. That is what lets a
-    sweep be *added to*: growing an axis extends the sweep in place rather than
-    producing a second one, the same way an evaluation adds to a run instead of
-    forking it.
-
-    So the identity cannot come from the definition. An earlier version derived it
-    from the definition digest, which made "the definition changed" and "this is a
-    different sweep" the same statement — so adding one axis value renamed the sweep
-    and, under a template naming it, relocated every child and orphaned whatever had
-    already run. That digest still exists and still changes; it is the
-    :func:`sweep_definition_digest`, which answers a different question.
-
-    Derived from the path rather than freshly minted so that a first preparation
-    needs no state to be reproducible, and persisted in the index so that a sweep
-    keeps its identity if the directory is later moved.
+    A sweep is anchored by its directory, never by its definition, so growing an
+    axis extends the sweep in place rather than renaming it. Derived from the
+    resolved path on first write and persisted in ``config/index.json`` so moving
+    the directory later keeps its identity.
     """
     return deterministic_id(SWEEP_ID_DOMAIN, str(Path(sweep_dir).resolve()))
+
+
+def _is_cross_field_validator_rejection(exc: ValidationError) -> bool:
+    """Whether every error in ``exc`` came from a custom ``ValueError`` validator.
+
+    Cross-field ``@model_validator`` rejections produce ``type == "value_error"``
+    and represent valid-schema combinations a project rejects (skipped into
+    ``Preparation.skipped``). Field-level type, literal, missing, or constraint
+    typos produce distinct error types and are refused outright.
+    """
+    errors = exc.errors()
+    return bool(errors) and all(err.get("type") == "value_error" for err in errors)
+
+
+def _format_validator_reason(exc: ValidationError) -> str:
+    messages = [str(err.get("msg", "")) for err in exc.errors()]
+    return "; ".join(m for m in messages if m) or str(exc)
+
+
+def _check_sweep_template_not_swept(
+    composed: Mapping[str, Any],
+    *,
+    root_type: type[BaseModel],
+    sweep_target: TargetSpec,
+    plan: SweepPlan,
+) -> None:
+    """Refuse a sweep output template referencing any path varied by a sweep axis."""
+    current: Any = composed
+    for segment in sweep_target.template.split("."):
+        if isinstance(current, Mapping) and segment in current:
+            current = current[segment]
+        else:
+            current = None
+            break
+    template = current if isinstance(current, str) else field_default(root_type, sweep_target.template)
+    if not isinstance(template, str):
+        return
+    swept_paths = {path for axis in plan.axes for path in axis.paths}
+    for ref in template_value_paths(template):
+        for swept in swept_paths:
+            if ref == swept or ref.startswith(f"{swept}.") or swept.startswith(f"{ref}."):
+                raise RefusalError(
+                    f"sweep output template {template!r} references swept axis path "
+                    f"{ref!r} (swept by {swept!r}); a sweep directory must not vary per child"
+                )
 
 
 def _resolve_child(
@@ -171,78 +236,105 @@ def _resolve_child(
     command: CommandSpec,
     hashes: HashRegistry,
     context: TemplateContext,
+    templates: TemplateRegistry | None,
     cwd: Path | None,
 ) -> Resolution:
-    """Resolve one child, with its sweep membership available to the template.
+    """Resolve one child with its sweep membership supplied explicitly.
 
-    ``runtime.sweep_id`` is fed to the resolver but not persisted as authored: it is
-    assigned, never written by hand, which is exactly what its resolved-only marker
-    says. Supplying it here rather than after resolution is what lets a child output
-    template name the sweep — ``{runtime.sweep_id}/{runtime.config_id}`` — so a
-    sweep's children live together instead of scattering through the output root.
-
-    It never reaches a digest: the marker excludes it, which is load-bearing, since
-    otherwise a child's identity would incorporate its membership and could not be
-    compared against the same configuration run alone.
-
-    Naming the sweep in a child's template has a cost worth knowing before choosing
-    it. A sweep's identity *is* its definition, so adding one axis value makes a
-    different sweep — and every child then resolves to a new directory, orphaning
-    whatever already ran. That is the one case re-preparation exists for, so a
-    template naming the configuration alone (``{runtime.config_id}``) is usually the
-    better default: growing the sweep then prepares exactly the children it gained.
-    Nothing is lost but tidiness, because reporting locates children through the
-    index rather than by where they sit.
+    ``sweep_id`` is passed via ``resolve(..., sweep_id=...)`` rather than
+    authored into ``config`` so ``runtime.sweep_id`` stays strictly resolved-only
+    while remaining available to child output templates such as
+    ``{runtime.sweep_id}/{runtime.config_id}``. Because ``sweep_id`` derives from
+    the sweep directory (D29), growing an axis keeps ``sweep_id`` stable and
+    re-preparation adds only newly introduced children.
     """
-    seeded = deepcopy(dict(config))
-    runtime = seeded.setdefault("runtime", {})
-    if isinstance(runtime, dict):
-        runtime["sweep_id"] = sweep_id
     return resolve(
-        seeded,
+        config,
         root_type=root_type,
         command=command,
         hashes=hashes,
         context=context,
+        templates=templates,
         cwd=cwd,
+        sweep_id=sweep_id,
     )
 
 
 def prepare_sweep(
     composed: Mapping[str, Any],
     *,
-    sweep_dir: Path,
-    root_type: type[BaseModel],
     command: CommandSpec,
-    hashes: HashRegistry,
-    context: TemplateContext,
+    sweep_dir: Path | None = None,
+    sweep_target: TargetSpec | None = None,
+    root_type: type[BaseModel] | None = None,
+    hashes: HashRegistry | None = None,
+    context: TemplateContext | None = None,
+    templates: TemplateRegistry | None = None,
+    compose_spec: ComposeSpec | None = None,
+    extra_dirs: Sequence[Path | str] = (),
     compose_child: ComposeChild | None = None,
     compose_without: Any = None,
     overrides: Sequence[str] = (),
     cwd: Path | None = None,
     argv_text: str = "",
     block: SweepBlock | None = None,
+    project: ProjectSpec | None = None,
+    config_hash_name: str | None = None,
 ) -> Preparation:
     """Expand, validate, resolve, check the gate, and write every child.
 
-    Nothing is written until every check has passed over every child. That ordering
-    is the whole point of preparation being its own act: a gate collision found
-    after eight children exist is eight directories that have to be reasoned about,
-    and a collision is exactly the failure that would otherwise be discovered when
-    the ninth child overwrites the fourth.
+    Supply either an explicit ``sweep_dir`` (persisting ``config/composed.yaml``
+    and ``config/index.json``) or ``sweep_target`` pointing at an opt-in
+    :class:`~honbu.sweeps.SweepOutputBlock` (resolving the sweep directory and
+    its reporting leaves, and persisting ``config/composed.yaml``,
+    ``config/resolved.yaml``, and ``config/index.json``).
 
-    ``compose_child`` is how group axes reach the compositor, since a group
-    selection carries a whole file and cannot be applied to a composed dict. A sweep
-    with no group axes needs none.
-
-    ``sweep_dir`` is the sweep, in the same sense that a run directory is the run.
-    Preparing against a directory that already holds an index *extends* that sweep:
-    it keeps its identity, keeps the children it has, and adds the ones the
-    definition gained.
+    When ``compose_spec`` (or ``project``) is given, group-axis child composition
+    and group-shadow validation are wired automatically via
+    :func:`~honbu.sweeps.sweep_composers`; explicit ``compose_child`` /
+    ``compose_without`` callbacks remain available as escape hatches.
     """
-    from honbu.sweeps import sweep_block_of
+    from honbu.sweeps.definitions import sweep_block_of
 
-    block = block if block is not None else sweep_block_of(composed, root_type=root_type)
+    if sweep_dir is None and sweep_target is None:
+        raise RefusalError(
+            "prepare_sweep() requires either an explicit sweep_dir or a sweep_target"
+        )
+
+    resolved_root = (
+        root_type if root_type is not None else (project.root_type if project else None)
+    )
+    if resolved_root is None:
+        raise DeclarationError("prepare_sweep() requires root_type or project")
+    resolved_hashes = (
+        hashes
+        if hashes is not None
+        else (project.hashes if project is not None else HashRegistry([]))
+    )
+    resolved_templates = (
+        templates
+        if templates is not None
+        else (project.templates if project is not None else None)
+    )
+    spec = (
+        compose_spec
+        if compose_spec is not None
+        else (project.compose_spec if project is not None else None)
+    )
+    ctx = context if context is not None else TemplateContext.now()
+
+    child_cb = compose_child
+    without_cb = compose_without
+    if spec is not None and (child_cb is None or without_cb is None):
+        built_child, built_without = sweep_composers(
+            spec, overrides=overrides, extra_dirs=extra_dirs, cwd=cwd
+        )
+        if child_cb is None:
+            child_cb = built_child
+        if without_cb is None:
+            without_cb = built_without
+
+    block = block if block is not None else sweep_block_of(composed, root_type=resolved_root)
     if block is None:
         raise RefusalError(
             f"no active {SWEEP_BLOCK!r} block to prepare: declare at least one axis, "
@@ -252,64 +344,118 @@ def prepare_sweep(
     gate = require_gate(block)
     plan = plan_sweep(
         block,
-        root_type=root_type,
+        root_type=resolved_root,
         composed=composed,
         overrides=overrides,
-        compose_without=compose_without,
+        compose_without=without_cb,
     )
 
+    warnings: list[str] = list(plan.warnings)
+    sweep_resolution: Resolution | None = None
+
+    if sweep_dir is None:
+        assert sweep_target is not None
+        _check_sweep_template_not_swept(
+            composed, root_type=resolved_root, sweep_target=sweep_target, plan=plan
+        )
+        sweep_cmd = CommandSpec(
+            name=("sweep",),
+            target=sweep_target,
+            hashes=command.hashes,
+            advances_run=False,
+        )
+        sweep_resolution = resolve(
+            composed,
+            root_type=resolved_root,
+            command=sweep_cmd,
+            hashes=resolved_hashes,
+            context=ctx,
+            templates=resolved_templates,
+            cwd=cwd,
+            allow_sweep_block=True,
+        )
+        assert sweep_resolution.target is not None
+        target_sweep_dir = sweep_resolution.target
+        warnings.extend(sweep_resolution.warnings)
+    else:
+        target_sweep_dir = Path(sweep_dir)
+
     # The identity comes from the directory, never from the definition, so that
-    # growing an axis extends this sweep rather than naming a new one.
-    existing = load_sweep_index(sweep_dir)
-    sweep_id = (existing or {}).get("sweep_id") or sweep_identity(sweep_dir)
+    # growing an axis extends this sweep rather than naming a new one (D29).
+    existing = load_sweep_index(target_sweep_dir)
+    sweep_id = (existing or {}).get("sweep_id") or sweep_identity(target_sweep_dir)
 
     # --- resolve every child before writing any of them ---------------------
-    configs: list[dict[str, Any]] = []
-    resolutions: list[Resolution] = []
+    valid_coordinates: list[Coordinate] = []
+    valid_configs: list[dict[str, Any]] = []
+    valid_resolutions: list[Resolution] = []
+    skipped: list[SkippedChild] = []
+
     for coordinate in plan.coordinates:
-        base = (
-            compose_child(coordinate.selections)
-            if coordinate.selections and compose_child is not None
-            else dict(composed)
-        )
-        if coordinate.selections and compose_child is None:
+        if coordinate.selections and child_cb is None:
             raise RefusalError(
                 f"axis {sorted(coordinate.selections)} selects configuration-group "
                 f"options, which must be applied during composition. Supply "
-                f"compose_child to prepare a sweep with group axes."
+                f"compose_spec (or compose_child) to prepare a sweep with group axes."
             )
+        base = child_cb(coordinate.selections) if coordinate.selections and child_cb is not None else dict(composed)
         config = child_configuration(base, coordinate)
-        configs.append(config)
-        resolutions.append(
-            _resolve_child(
+        try:
+            resolution = _resolve_child(
                 config,
                 sweep_id=sweep_id,
-                root_type=root_type,
+                root_type=resolved_root,
                 command=command,
-                hashes=hashes,
-                context=context,
+                hashes=resolved_hashes,
+                context=ctx,
+                templates=resolved_templates,
                 cwd=cwd,
             )
+        except ValidationError as exc:
+            if _is_cross_field_validator_rejection(exc):
+                reason = _format_validator_reason(exc)
+                skipped.append(
+                    SkippedChild(
+                        index=coordinate.index,
+                        values=dict(coordinate.values),
+                        reason=reason,
+                    )
+                )
+                warnings.append(
+                    f"skipped child #{coordinate.index} {dict(coordinate.values)}: {reason}"
+                )
+                continue
+            raise RefusalError(
+                f"child #{coordinate.index} {dict(coordinate.values)} failed schema "
+                f"validation: {exc}"
+            ) from None
+
+        valid_coordinates.append(coordinate)
+        valid_configs.append(config)
+        valid_resolutions.append(resolution)
+        warnings.extend(resolution.warnings)
+
+    if not valid_resolutions:
+        raise RefusalError(
+            "all expanded sweep combinations were rejected by model validation; "
+            "zero valid children remain"
         )
 
-    def resolve_first(ctx: TemplateContext) -> Resolution:
-        """The first child again, under a different invocation.
-
-        One configuration is enough for the stability check: the gate is a path, not
-        a value, so a path that is invocation-derived is invocation-derived for
-        every child.
-        """
+    def resolve_first(divergent_ctx: TemplateContext) -> Resolution:
         return _resolve_child(
-            configs[0],
+            valid_configs[0],
             sweep_id=sweep_id,
-            root_type=root_type,
+            root_type=resolved_root,
             command=command,
-            hashes=hashes,
-            context=ctx,
+            hashes=resolved_hashes,
+            context=divergent_ctx,
+            templates=resolved_templates,
             cwd=cwd,
         )
 
-    _check_gate_over(gate, plan, resolutions, command, resolve_first)
+    _check_gate_over(
+        gate, valid_coordinates, valid_resolutions, command, resolve_first
+    )
 
     # --- only now does anything land on disk --------------------------------
     children = tuple(
@@ -319,36 +465,51 @@ def prepare_sweep(
             coordinate=coordinate,
             gate=gate,
             sweep_id=sweep_id,
-            hashes=hashes,
+            hashes=resolved_hashes,
             argv_text=argv_text,
+            config_hash_name=config_hash_name,
+            project=project,
         )
-        for coordinate, config, resolution in zip(plan.coordinates, configs, resolutions)
+        for coordinate, config, resolution in zip(
+            valid_coordinates, valid_configs, valid_resolutions
+        )
     )
 
     retired = retired_entries((existing or {}).get("children", ()), children)
+    sweep_cfg_dir = target_sweep_dir / CONFIG_DIRNAME
+    sweep_cfg_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(sweep_cfg_dir / COMPOSED_NAME, _dump_yaml(composed))
+    if sweep_resolution is not None:
+        atomic_write_text(
+            sweep_cfg_dir / RESOLVED_NAME,
+            _dump_yaml(sweep_resolution.portable.model_dump(mode="json")),
+        )
     write_sweep_index(
-        sweep_dir,
+        target_sweep_dir,
         sweep_id=sweep_id,
         sweep_hash=plan.digest,
         gate=gate,
         children=children,
         retired=retired,
+        skipped=skipped,
     )
 
     return Preparation(
         sweep_id=sweep_id,
         sweep_hash=plan.digest,
         gate=gate,
-        sweep_dir=sweep_dir,
+        sweep_dir=target_sweep_dir,
         children=children,
-        warnings=plan.warnings,
+        warnings=tuple(dict.fromkeys(warnings)),
         retired=retired,
+        skipped=tuple(skipped),
+        sweep_resolution=sweep_resolution,
     )
 
 
 def _check_gate_over(
     gate: str,
-    plan: SweepPlan,
+    coordinates: Sequence[Coordinate],
     resolutions: Sequence[Resolution],
     command: CommandSpec,
     resolve_first: Callable[[TemplateContext], Resolution],
@@ -366,7 +527,7 @@ def _check_gate_over(
         gate,
         resolve_with=resolve_first,
         values=[read_path(r.portable, gate) for r in resolutions],
-        coordinates=plan.coordinates,
+        coordinates=coordinates,
         config=resolutions[0].portable,
         template_field=command.target.template,
         targets=[r.target for r in resolutions],
@@ -382,12 +543,14 @@ def _write_child(
     sweep_id: str,
     hashes: HashRegistry,
     argv_text: str,
+    config_hash_name: str | None = None,
+    project: ProjectSpec | None = None,
 ) -> PreparedChild:
     """Write one child in the initialized state, or leave an existing one alone."""
     from honbu.sweeps.gate import read_path
 
     target = resolution.target
-    assert target is not None  # guaranteed by the target check above
+    assert target is not None
     gate_value = read_path(resolution.portable, gate)
 
     if (target / MANIFEST_NAME).is_file():
@@ -405,6 +568,8 @@ def _write_child(
         composed=config,
         hashes=hashes,
         argv_text=argv_text,
+        config_hash_name=config_hash_name,
+        project=project,
     )
     run.manifest.record_event(
         "sweep:member",
@@ -435,18 +600,7 @@ def _write_child(
 def retired_entries(
     previous: Sequence[Mapping[str, Any]], children: Sequence[PreparedChild]
 ) -> tuple[dict[str, Any], ...]:
-    """Index entries the current definition no longer covers.
-
-    Kept rather than dropped. A child that ran and finished holds results, and an
-    index that quietly stopped mentioning it would leave its directory on disk and
-    unreferenced — the silent omission the index exists to prevent. So the entry
-    survives, marked as outside the current definition, and reporting can say the
-    sweep once covered that value.
-
-    Keyed by gate value, because that is what a gate is for: the value that
-    identifies a child. Keying by directory would lose the correspondence the moment
-    an output template changed.
-    """
+    """Index entries the current definition no longer covers."""
     current = {repr(child.gate_value) for child in children}
     return tuple(
         {**dict(entry), "in_definition": False}
@@ -463,34 +617,22 @@ def write_sweep_index(
     gate: str,
     children: Sequence[PreparedChild],
     retired: Sequence[Mapping[str, Any]] = (),
+    skipped: Sequence[SkippedChild] = (),
 ) -> Path:
-    """The sweep's record of which children exist and where.
-
-    Each entry is immutable once written — nothing here is a progress cache, and no
-    child's state is stored. But the index as a whole *accumulates*, the way a run's
-    manifest accumulates invocations: growing an axis adds entries and keeps the
-    ones already there.
-
-    ``sweep_hash`` is recorded and is allowed to change; it is what says the
-    definition grew. ``sweep_id`` does not, because a sweep is its directory.
-
-    Reporting locates children through this and never scans, so a child that was
-    moved or deleted is reported missing rather than silently omitted from a total
-    that then looks complete.
-    """
+    """Persist ``config/index.json``: active children, retired entries, and skipped combos."""
     path = sweep_dir / CONFIG_DIRNAME / SWEEP_INDEX_NAME
-    atomic_write_json(
-        path,
-        {
-            "sweep_id": sweep_id,
-            "sweep_hash": sweep_hash,
-            "gate": gate,
-            "children": [
-                *(child.as_index_entry() for child in children),
-                *(dict(entry) for entry in retired),
-            ],
-        },
-    )
+    payload: dict[str, Any] = {
+        "sweep_id": sweep_id,
+        "sweep_hash": sweep_hash,
+        "gate": gate,
+        "children": [
+            *(child.as_index_entry() for child in children),
+            *(dict(entry) for entry in retired),
+        ],
+    }
+    if skipped:
+        payload["skipped"] = [item.as_index_entry() for item in skipped]
+    atomic_write_json(path, payload)
     return path
 
 

@@ -54,9 +54,11 @@ Three things are doing real work here:
     from every digest — so moving the project to another machine does not change
     what a run *is*. See [Retype paths](how-to/paths.md).
 
-`DERIVED` and `FromHash`
-:   `config_hash` is written by Honbu, from the hash named `config_hash`. Authoring
-    a value for it is refused. See [Declare hashes](how-to/hashes.md).
+`HashedRuntimeConfig`
+:   An opt-in subclass of `RuntimeConfig` pre-wired with `config_hash` (`DERIVED`
+    and `FromHash("config_hash")`) and `config_id = "{runtime.config_hash:coolname}"`.
+    Authoring a value for a derived field is refused. See
+    [Declare hashes](how-to/hashes.md).
 
 `validate_root_contract`
 :   Checks the requirable blocks at *import*, so a malformed root fails when you
@@ -74,11 +76,12 @@ A digest turns a configuration into a name. Declare what goes into it, once:
 inputs *are* — and because it reads inputs, it is **deferred**: it cannot be known
 before the run opens, so the run completes it and the manifest records that it did.
 
-## 6. Declare your commands
+## 6. Declare your commands and project
 
-A command declares its target, the steps it will take, and where its configuration
-may come from. Honbu derives its argv parsing, its help, and its write scope from
-this — there is no second place to keep in step.
+A `CommandSpec` declares its target, the steps it will take, its write scope, and
+which configuration sources it accepts. `ProjectSpec` bundles the root type,
+composition spec, and hash registry once so every operation shares them. Your CLI
+(here Typer with `honbu.cli.presets`) stays yours.
 
 ```python
 --8<-- "examples/linefit/project.py:commands"
@@ -86,9 +89,9 @@ this — there is no second place to keep in step.
 
 ## 7. Write the work
 
-The handler receives a live `Run`. Everything around it — composing, resolving,
-placing the directory, writing provenance, updating the manifest — has already
-happened or will happen without you.
+The command loads and resolves the configuration, then opens a live `Run`.
+Everything inside the lifecycle — placing the directory, writing provenance,
+completing deferred hashes, updating the manifest — happens through `open_run`:
 
 ```python
 --8<-- "examples/linefit/project.py:handler"
@@ -109,9 +112,9 @@ runs/linefit/dynamic-macaw/
 ├── manifest.json
 ├── config/
 │   ├── composed.yaml      # what you authored, portable
-│   └── resolved.yaml      # what ran, absolute
-├── checkpoints/line.json
-└── hashes/
+│   ├── resolved.yaml      # what ran, absolute
+│   └── hashes/            # one artifact per digest
+└── checkpoints/line.json
 ```
 
 Open `manifest.json`. It records the state, an append-only timeline, every

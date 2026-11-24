@@ -5,11 +5,13 @@ writes it.
 
 ```text
 runs/linefit/dynamic-macaw/
-├── manifest.json      # the live record
-├── config/            # composed.yaml, resolved.yaml
-├── hashes/            # one artifact per digest
-├── checkpoints/       # yours
-└── reports/           # yours
+├── manifest.json        # the live record
+├── config/
+│   ├── composed.yaml    # authored, portable
+│   ├── resolved.yaml    # resolved, absolute
+│   └── hashes/          # one artifact per digest
+├── checkpoints/         # yours
+└── reports/             # yours
 ```
 
 ## The manifest is the record

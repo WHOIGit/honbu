@@ -16,11 +16,18 @@ import json
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from honbu.core.targets import MANIFEST_NAME
 from honbu.flow import Manifest
 
 from linefit.project import APP, HASHES, RootConfig
+
+RUNNER = CliRunner()
+
+
+def run_cli(args: list[str], *, catch_exceptions: bool = True):
+    return RUNNER.invoke(APP, args, catch_exceptions=catch_exceptions)
 
 
 @pytest.fixture
@@ -46,7 +53,8 @@ def only_run(project: Path) -> Path:
 
 
 def test_the_documented_first_run_completes(project):
-    assert APP.dispatch(["train"], cwd=project) == 0
+    res = run_cli(["train"])
+    assert res.exit_code == 0, res.output
 
     manifest = Manifest.load(only_run(project))
     assert manifest.state == "completed"
@@ -55,7 +63,7 @@ def test_the_documented_first_run_completes(project):
 
 def test_a_run_records_what_produced_it(project):
     """The claim the identity page makes: the manifest says what this run was."""
-    APP.dispatch(["train"], cwd=project)
+    assert run_cli(["train"]).exit_code == 0
 
     data = json.loads((only_run(project) / MANIFEST_NAME).read_text())
     assert set(data["hashes"]) == {"config_hash", "dataset_hash"}
@@ -64,7 +72,7 @@ def test_a_run_records_what_produced_it(project):
 
 
 def test_the_configuration_bundle_is_written_beside_the_run(project):
-    APP.dispatch(["train"], cwd=project)
+    assert run_cli(["train"]).exit_code == 0
 
     names = {path.name for path in (only_run(project) / "config").iterdir()}
     assert {"composed.yaml", "resolved.yaml"} <= names
@@ -73,8 +81,8 @@ def test_the_configuration_bundle_is_written_beside_the_run(project):
 def test_two_invocations_of_one_configuration_are_two_runs(project):
     """`{runtime.run_id}` is minted per invocation, so an ordinary repeat coexists
     rather than colliding — the motivation for the identity page."""
-    APP.dispatch(["train"], cwd=project)
-    APP.dispatch(["train"], cwd=project)
+    assert run_cli(["train"]).exit_code == 0
+    assert run_cli(["train"]).exit_code == 0
 
     assert len(list((project / "runs" / "linefit").iterdir())) == 2
 
@@ -83,7 +91,7 @@ def test_two_invocations_of_one_configuration_are_two_runs(project):
 
 
 def test_an_override_reaches_the_configuration(project):
-    APP.dispatch(["train", "training.epochs=3"], cwd=project)
+    assert run_cli(["train", "training.epochs=3"]).exit_code == 0
 
     resolved = (only_run(project) / "config" / "resolved.yaml").read_text()
     assert "epochs: 3" in resolved
@@ -93,7 +101,7 @@ def test_a_deferred_hash_is_completed_by_the_run(project):
     """`dataset_hash` reads inputs, so it cannot be known before the run opens."""
     assert "dataset_hash" in HASHES.deferred_names
 
-    APP.dispatch(["train"], cwd=project)
+    assert run_cli(["train"]).exit_code == 0
 
     recorded = json.loads((only_run(project) / MANIFEST_NAME).read_text())["hashes"]
     assert recorded["dataset_hash"]["value"]
@@ -111,8 +119,8 @@ def test_a_completed_step_is_not_repeated_on_resume(project, monkeypatch):
         raise RuntimeError("evaluation died")
 
     monkeypatch.setattr(example, "loss_of", explode)
-    with pytest.raises(RuntimeError):
-        APP.dispatch(["train"], cwd=project)
+    with pytest.raises(RuntimeError, match="evaluation died"):
+        run_cli(["train"], catch_exceptions=False)
 
     run_dir = only_run(project)
     checkpoint = run_dir / "checkpoints" / "line.json"
@@ -120,29 +128,46 @@ def test_a_completed_step_is_not_repeated_on_resume(project, monkeypatch):
     assert Manifest.load(run_dir).state == "failed"
 
     monkeypatch.undo()
-    assert APP.dispatch(["train", "--resolved", str(run_dir), "--resume"], cwd=project) == 0
+    res = run_cli(["train", "--resolved", str(run_dir), "--resume"])
+    assert res.exit_code == 0, res.output
 
     assert checkpoint.stat().st_mtime_ns == stamp
     assert Manifest.load(run_dir).state == "completed"
 
 
 def test_an_augmenting_command_extends_the_run_it_names(project):
-    APP.dispatch(["train"], cwd=project)
+    assert run_cli(["train"]).exit_code == 0
     run_dir = only_run(project)
 
-    assert APP.dispatch(["report", "--resolved", str(run_dir)], cwd=project) == 0
+    res = run_cli(["report", "--resolved", str(run_dir)])
+    assert res.exit_code == 0, res.output
 
     assert (run_dir / "reports" / "line.txt").is_file()
     assert (run_dir / "checkpoints" / "line.json").is_file()
     assert len(Manifest.load(run_dir).data["invocations"]) == 2
 
 
-def test_an_authored_derived_field_is_refused(project, capsys):
-    """`DERIVED` is not documentation: authoring the value Honbu writes is refused."""
-    code = APP.dispatch(["train", "runtime.config_hash=pretend"], cwd=project)
+def test_forking_produces_a_new_run_with_lineage(project):
+    assert run_cli(["train"]).exit_code == 0
+    parent = only_run(project)
 
-    assert code == 1
-    assert "Traceback" not in capsys.readouterr().err
+    res = run_cli(["train", "--fork-from", str(parent), "training.epochs=10"])
+    assert res.exit_code == 0, res.output
+    runs = sorted((project / "runs" / "linefit").iterdir())
+    assert len(runs) == 2
+    child = next(r for r in runs if r != parent)
+    lineage = Manifest.load(child).data["parent"]
+    assert lineage["run_dir"] == str(parent)
+    assert lineage["artifact_key"] == "checkpoint"
+
+
+def test_an_authored_derived_field_is_refused(project):
+    """`RESOLVED_ONLY` is not documentation: authoring the value Honbu writes is refused."""
+    res = run_cli(["train", "+runtime.config_hash=pretend"])
+
+    assert res.exit_code == 1
+    assert "Traceback" not in res.output
+    assert "resolved-only" in res.output
 
 
 def test_the_example_is_a_flat_root_of_declared_blocks():

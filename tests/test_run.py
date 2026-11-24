@@ -15,27 +15,28 @@ from honbu import (
     FieldHash,
     FromHash,
     HashRegistry,
-    MANIFEST_NAME,
     OutputBlock,
     OutputLeaf,
     PortablePath,
     RefusalError,
-    ResolvedPath,
     ResolvedString,
     RuntimeConfig,
     SourceHash,
     StrictModel,
-    TemplateContext,
 )
+from honbu.core import MANIFEST_NAME, TemplateContext
 from honbu.errors import DeclarationError
 from honbu.flow import (
     CommandSpec,
+    ComposeSpec,
     Manifest,
-    initialize_run,
+    ProjectSpec,
     StepSpec,
     TargetSpec,
     config_dir_for,
+    initialize_run,
     open_run,
+    parent_record,
     resolve,
 )
 
@@ -51,7 +52,7 @@ class Runtime(RuntimeConfig):
 
 
 class Prepared(StrictModel):
-    dataset_hash: Annotated[ResolvedString, FromHash("dataset_hash")] = None
+    note: str | None = None
 
 
 class Data(StrictModel):
@@ -60,7 +61,6 @@ class Data(StrictModel):
 
 
 class TrainingOutputs(OutputBlock):
-    dir: ResolvedPath = None
     dir_template: str | None = "{experiment.name:slug}/run"
     checkpoints: OutputLeaf = Field(
         default_factory=lambda: OutputLeaf(dir=Path("checkpoints"))
@@ -100,7 +100,7 @@ EVAL = CommandSpec(
     name=("eval",),
     mode="augment",
     target=TARGET,
-    config_sources=("resolved", "continue"),
+    config_sources=("resolved", "fork"),
     scope=("training_outputs.figures",),
     hashes=("config_hash",),
 )
@@ -720,3 +720,293 @@ def test_augmenting_never_advances_a_run_whatever_is_declared(tmp_path):
     from dataclasses import replace
 
     assert replace(EVAL, advances_run=True).advances_run is False
+
+
+def test_run_hash_and_hash_entry_across_deferred_fanned_and_resume(tmp_path):
+    from honbu import FannedHash
+
+    hashes = HashRegistry(
+        [
+            FieldHash(name="config_hash", include=["experiment", "data", "epochs"]),
+            SourceHash(
+                name="dataset_hash",
+                build=lambda ctx: {"version": "1", "rows": ctx.get("rows", 0)},
+                reads_inputs=True,
+            ),
+            FannedHash(
+                name="head_hash",
+                build=lambda ctx: {
+                    "dorsal": {"version": "1", "c": 3},
+                    "caudal": {"version": "1", "c": 5},
+                },
+                reads_inputs=True,
+            ),
+        ],
+        root_type=Root,
+    )
+    cmd = CommandSpec(
+        name=("train",),
+        target=TARGET,
+        hashes=("config_hash", "dataset_hash", "head_hash"),
+        steps=(StepSpec("prepare"), StepSpec("fit")),
+    )
+    res = resolve(COMPOSED, root_type=Root, command=cmd, hashes=hashes, context=CONTEXT, cwd=tmp_path)
+
+    with open_run(res, composed=COMPOSED, hashes=hashes, argv_text="train") as first:
+        assert first.hash("config_hash") == res.hashes["config_hash"].value
+        assert first.hash_entry("config_hash") == res.hashes["config_hash"]
+        assert first.hash("dataset_hash") is None
+        assert first.hash_entry("dataset_hash") is None
+
+        with first.step("prepare"):
+            ds = first.complete_hash("dataset_hash", inputs={"rows": 99})
+            heads = first.complete_hash("head_hash")
+            assert first.hash("dataset_hash") == ds["dataset_hash"].value
+            assert first.hash_entry("dataset_hash") == ds["dataset_hash"]
+            assert first.hash("head_hash.dorsal") == heads["head_hash.dorsal"].value
+            assert first.hash_entry("head_hash.caudal") == heads["head_hash.caudal"]
+            assert first.deferred == ()
+
+    # Resume sees previously completed deferred and fanned hashes.
+    with open_run(res, composed=COMPOSED, hashes=hashes, argv_text="train --resume", resume=True) as second:
+        assert second.hash("dataset_hash") == ds["dataset_hash"].value
+        assert second.hash_entry("dataset_hash") == ds["dataset_hash"]
+        assert second.hash("head_hash.dorsal") == heads["head_hash.dorsal"].value
+        assert second.deferred == ()
+        with second.step("fit"):
+            pass
+
+
+def test_run_artifact_preserves_windows_absolute_path(tmp_path):
+    with _open(tmp_path) as run:
+        run.manifest.record_artifact("win_ckpt", "C:\\models\\best.pt")
+        assert str(run.artifact("win_ckpt")) == "C:\\models\\best.pt"
+
+
+def test_run_lifecycle_hardening_and_manifest_invariants(tmp_path):
+    # 1. clobber=True and resume=True are mutually exclusive
+    with pytest.raises(RefusalError, match="mutually exclusive"):
+        with _open(tmp_path, clobber=True, resume=True):
+            pass
+
+    # 2. resume=True on augmenting command is refused
+    with _open(tmp_path) as first:
+        with first.step("prepare"):
+            pass
+        run_dir = first.run_dir
+    with pytest.raises(RefusalError, match="augmenting command and cannot use resume"):
+        with _open(tmp_path, command=EVAL, existing_target=run_dir, resume=True):
+            pass
+
+    # 3. Run.warnings preserves resolution + target warnings (case collision)
+    (tmp_path / "runs" / "reef-v3" / "Run").mkdir(parents=True, exist_ok=True)
+    res_warn = resolve(
+        {"experiment": {"name": "reef v3"}, "data": {"uri": "./datasets/coco8"}},
+        root_type=Root,
+        command=TRAIN,
+        hashes=HASHES,
+        context=CONTEXT,
+        cwd=tmp_path,
+    )
+    with open_run(res_warn, composed=COMPOSED, hashes=HASHES, clobber=True) as r:
+        assert any("differ only in case" in w for w in r.warnings)
+
+
+def test_run_skip_respects_not_applicable_steps(tmp_path):
+    with _open(tmp_path) as first:
+        first.not_applicable("prepare", reason="cached upstream")
+    assert first.manifest.state == "partial"
+
+    with _open(tmp_path, resume=True) as second:
+        assert second.skip("prepare") is True
+        assert second.skip("fit") is False
+        with second.step("fit"):
+            pass
+    assert second.manifest.state == "completed"
+
+
+def test_manifest_failure_timeline_derive_state_and_progress_merge(tmp_path):
+    with pytest.raises(ValueError, match="oom"):
+        with _open(tmp_path) as first:
+            first.record_progress(epoch=1, loss=0.9)
+            first.record_progress({"lr": 0.01})
+            assert first.progress["epoch"] == 1
+            assert first.progress["loss"] == 0.9
+            assert first.progress["lr"] == 0.01
+            first.set_progress(epoch=2)
+            assert "loss" not in first.progress
+            assert first.progress["epoch"] == 2
+            run_dir = first.run_dir
+            raise ValueError("oom")
+
+    failed = Manifest.load(run_dir)
+    err_event = failed.data["timeline"][-1]
+    assert err_event["event"] == "error"
+    assert err_event["kind"] == "ValueError"
+    assert err_event["message"] == "oom"
+    assert failed.data["failure"] == {"kind": "ValueError", "message": "oom"}
+
+    # Tampering top-level state on disk is corrected by derive_state=True (and kept when False)
+    import json
+
+    raw = json.loads((run_dir / MANIFEST_NAME).read_text())
+    raw["state"] = "completed"
+    (run_dir / MANIFEST_NAME).write_text(json.dumps(raw))
+    assert Manifest.load(run_dir, derive_state=True).state == "failed"
+    assert Manifest.load(run_dir, derive_state=False).state == "completed"
+
+    # Resuming clears top-level failure while retaining historical error event on timeline
+    with _open(tmp_path, resume=True) as second:
+        assert second.manifest.data["failure"] is None
+        for step in second.command.required_steps:
+            with second.step(step):
+                pass
+    reloaded = Manifest.load(run_dir)
+    assert reloaded.state == "completed"
+    assert reloaded.data["failure"] is None
+    assert any(e["event"] == "error" and e["kind"] == "ValueError" for e in reloaded.data["timeline"])
+
+
+def test_augmenting_config_index_gt_1_preserves_producing_run_hashes(tmp_path):
+    extra_hashes = HashRegistry(
+        [
+            FieldHash(name="config_hash", include=["experiment", "data", "epochs"]),
+            FieldHash(name="eval_hash", include=["epochs"]),
+        ],
+        root_type=Root,
+    )
+    eval_cmd = CommandSpec(
+        name=("eval",),
+        mode="augment",
+        target=TARGET,
+        config_sources=("resolved",),
+        scope=("training_outputs.figures",),
+        hashes=("config_hash", "eval_hash"),
+    )
+    with _open(tmp_path) as first:
+        for s in first.command.required_steps:
+            with first.step(s):
+                pass
+        run_dir = first.run_dir
+        producing_hash = first.hash("config_hash")
+
+    overridden = {**COMPOSED, "epochs": 99}
+    res2 = resolve(
+        overridden,
+        root_type=Root,
+        command=eval_cmd,
+        hashes=extra_hashes,
+        context=CONTEXT,
+        cwd=tmp_path,
+        existing_target=run_dir,
+    )
+    with open_run(res2, composed=overridden, hashes=extra_hashes, argv_text="eval epochs=99") as aug:
+        assert aug.config_dir == config_dir_for(run_dir, 2)
+        assert aug.hash("config_hash") == res2.digests["config_hash"]
+        assert aug.hash("config_hash") != producing_hash
+
+    manifest = Manifest.load(run_dir)
+    # Producing run's config_hash stays intact at top-level; newly introduced eval_hash is added!
+    assert manifest.data["hashes"]["config_hash"]["value"] == producing_hash
+    assert manifest.data["hashes"]["eval_hash"]["value"] == res2.digests["eval_hash"]
+    assert manifest.data["invocations"][1]["config_hash"] == res2.digests["config_hash"]
+    assert (run_dir / "config" / "2" / "hashes" / "config_hash.json").is_file()
+
+
+def test_resume_preserves_run_id_and_refuses_config_hash_drift_by_default(tmp_path):
+    ctx1 = TemplateContext(
+        now_local=CONTEXT.now_local, now_utc=CONTEXT.now_utc, seed="1111111111111111"
+    )
+    ctx2 = TemplateContext(
+        now_local=CONTEXT.now_local, now_utc=CONTEXT.now_utc, seed="2222222222222222"
+    )
+    res1 = resolve(COMPOSED, root_type=Root, command=TRAIN, hashes=HASHES, context=ctx1, cwd=tmp_path)
+    with open_run(res1, composed=COMPOSED, hashes=HASHES, argv_text="train") as first:
+        with first.step("prepare"):
+            pass
+        first_run_id = first.config.runtime.run_id
+        run_dir = first.run_dir
+
+    # Resuming with a fresh context seed preserves run_id and reuses config index 1!
+    res2 = resolve(COMPOSED, root_type=Root, command=TRAIN, hashes=HASHES, context=ctx2, cwd=tmp_path)
+    assert res2.config.runtime.run_id != first_run_id
+    with open_run(res2, composed=COMPOSED, hashes=HASHES, argv_text="train --resume", resume=True) as second:
+        assert second.config.runtime.run_id == first_run_id
+        assert second.config_dir == config_dir_for(run_dir, 1)
+    assert not (run_dir / "config" / "2").exists()
+
+    # Behavioral config_hash drift is refused by default on resume
+    drifted_cfg = {**COMPOSED, "epochs": 999}
+    drifted_res = resolve(
+        drifted_cfg, root_type=Root, command=TRAIN, hashes=HASHES, context=ctx2, cwd=tmp_path
+    )
+    with pytest.raises(RefusalError, match="behavioral config_hash changed"):
+        with open_run(drifted_res, composed=drifted_cfg, hashes=HASHES, resume=True):
+            pass
+
+    # Opt-in allow_config_drift=True permits it
+    with open_run(
+        drifted_res,
+        composed=drifted_cfg,
+        hashes=HASHES,
+        resume=True,
+        allow_config_drift=True,
+    ) as forced:
+        with forced.step("fit"):
+            pass
+    assert forced.manifest.state == "completed"
+
+
+def test_disabled_output_leaf_is_skipped_in_scope_dirs(tmp_path):
+    with _open(tmp_path) as first:
+        run_dir = first.run_dir
+
+    disabled = {**COMPOSED, "training_outputs": {"figures": {"enabled": False, "dir": "figures"}}}
+    res = resolve(
+        disabled,
+        root_type=Root,
+        command=EVAL,
+        hashes=HASHES,
+        context=CONTEXT,
+        cwd=tmp_path,
+        existing_target=run_dir,
+    )
+    with open_run(res, composed=disabled, hashes=HASHES, clobber=True):
+        pass
+    assert not (run_dir / "figures").exists()
+
+
+def test_parameterized_config_hash_name_and_parent_record_artifact_key(tmp_path):
+    class CustomRuntime(RuntimeConfig):
+        cfg_digest: Annotated[ResolvedString, FromHash("my_cfg")] = None
+
+    class CustomRoot(Root):
+        runtime: CustomRuntime = Field(default_factory=CustomRuntime)
+
+    custom_hashes = HashRegistry(
+        [FieldHash(name="my_cfg", include=["experiment", "epochs"])],
+        root_type=CustomRoot,
+    )
+    project = ProjectSpec(
+        root_type=CustomRoot,
+        compose_spec=ComposeSpec(packaged=None),
+        hashes=custom_hashes,
+        config_hash_name="my_cfg",
+    )
+    cmd = CommandSpec(name=("train",), target=TARGET, hashes=("my_cfg",), fork_artifact="last")
+    res = resolve(COMPOSED, command=cmd, project=project, context=CONTEXT, cwd=tmp_path)
+    with open_run(res, composed=COMPOSED, project=project, argv_text="train") as first:
+        first.record_artifact("last", "checkpoints/last.pt")
+        first.record_artifact("best", "checkpoints/best.pt")
+        run_dir = first.run_dir
+
+    assert Manifest.load(run_dir).data["invocations"][0]["config_hash"] == res.digests["my_cfg"]
+
+    rec_default = parent_record(run_dir, command=cmd, project=project)
+    assert rec_default["artifact_key"] == "last"
+    assert rec_default["artifact"] == "checkpoints/last.pt"
+    assert rec_default["config_hash"] == res.digests["my_cfg"]
+
+    rec_best = parent_record(run_dir, artifact="best", command=cmd, project=project)
+    assert rec_best["artifact_key"] == "best"
+    assert rec_best["artifact"] == "checkpoints/best.pt"

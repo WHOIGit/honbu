@@ -26,20 +26,21 @@ sanitizing one would strip its leading separator.
 | `coolname` | yes | a deterministic human-readable name for a digest |
 | `slug` | yes | a filesystem-safe form of the value |
 | `command` | no | the invoked command's name |
-| `source_run_dir` | no | the run named by `--resolved` or `--continue-from` |
+| `source_run_dir` | no | the run named by `--resolved` or `--fork-from` |
 
 `source_run_dir` emits a whole path and so skips component sanitization.
 
 ## Your own functions
 
 ```python
-from honbu import BUILTIN_FUNCTIONS, TemplateFunctionSpec, TemplateRegistry
+from honbu.core.templates import BUILTIN_FUNCTIONS, TemplateFunctionSpec, TemplateRegistry
+from honbu.flow import ProjectSpec
 
 registry = TemplateRegistry([
     *BUILTIN_FUNCTIONS,
     TemplateFunctionSpec("fold", lambda ctx, value: f"fold{value:02d}"),
 ])
-Application(..., templates=registry)
+PROJECT = ProjectSpec(root_type=RootConfig, compose_spec=CONFIG, hashes=HASHES, templates=registry)
 ```
 
 The specs you pass **replace** the built-ins rather than adding to them, so splat

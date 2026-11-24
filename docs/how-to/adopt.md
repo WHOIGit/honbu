@@ -8,12 +8,45 @@ your project almost certainly gets subtly wrong and cannot tell.
 
 ## 1. Make the schema strict
 
-Assemble a `StrictModel` root from Honbu's requirable blocks and your existing
-configuration blocks, keeping it flat. Add `validate_root_contract(RootConfig)`.
+Assemble a `StrictModel` root from Honbu's requirable blocks (`ExperimentConfig`,
+`RuntimeConfig` or `HashedRuntimeConfig`, `OutputBlock`, `OutputLeaf`) and your
+existing configuration blocks, keeping it flat. Add `validate_root_contract(RootConfig)`.
 
 Expect this step to find things: keys nobody sets any more, two spellings of one
 option, a default that never validated. Strictness turns a typo'd override from a
 silent no-op into an error, which is most of the value on its own.
+
+### Derived domain fields
+
+Sometimes a domain block computes a derived convenience field from other authored
+fields during validation — for instance, deriving an `inference_pipeline` transform
+list from the authored training transforms in `model_validator(mode="after")`.
+
+Mark that field with **`RESOLVED_ONLY` without `DERIVED`**:
+
+```python
+from typing import Annotated
+from pydantic import model_validator
+from honbu import RESOLVED_ONLY, StrictModel
+
+class TransformConfig(StrictModel):
+    train_pipeline: list[str]
+    inference_pipeline: Annotated[list[str] | None, RESOLVED_ONLY] = None
+
+    @model_validator(mode="after")
+    def _derive_inference(self) -> "TransformConfig":
+        if self.inference_pipeline is None:
+            self.inference_pipeline = [t for t in self.train_pipeline if t != "random_flip"]
+        return self
+```
+
+Why `RESOLVED_ONLY` *without* `DERIVED`?
+
+- **`RESOLVED_ONLY`** refuses authored values on fresh runs (`replay=False`) and
+  strips the field from `composed.yaml`, while preserving it in `resolved.yaml` and
+  accepting it on `--resolved` replays.
+- Omitting **`DERIVED`** keeps the field *inside* behavioral digests if its parent
+  block is hashed (or pair with `DERIVED` if it is purely redundant accounting).
 
 **Stop here and you already have:** a configuration that is one declared thing rather
 than a dictionary of conventions.
@@ -29,7 +62,9 @@ through the code — because resolution now does it once, in a known phase.
 ## 3. Declare the digests
 
 Declare a `FieldHash` over the subtrees that decide behavior, and a `SourceHash` for
-your dataset if its contents are part of what a run is.
+your dataset if its contents are part of what a run is. If your runtime block uses
+`HashedRuntimeConfig`, `config_hash` and `config_id` are already wired to
+`FromHash("config_hash")`.
 
 Now compare: does your existing run-naming scheme agree with the digest about which
 runs are "the same"? For most projects the answer is no, and the discrepancy is the
@@ -42,13 +77,17 @@ your experiment is.
 
 ## 4. Declare commands and adopt the run
 
-Declare `CommandSpec`s for what your CLI already does, then move each entry point's
-body into a handler that receives a `Run`. Wrap expensive phases in `run.step()` and
-record artifacts and best metrics through the run.
+Declare `CommandSpec`s for what your CLI already does and bundle your schema,
+composition spec, and hashes into a `ProjectSpec`. Inside your existing CLI callbacks,
+call `load_config` → `resolve` → `open_run` and move the work inside `run.step()`,
+recording artifacts and best metrics through the run.
 
-You do not have to adopt Honbu's dispatcher to do this: `dispatch_command` works from
-your own parser, so a project with a Typer surface it likes keeps it. See
-[Register commands](commands.md).
+`honbu.flow` has no CLI framework dependency, so a project with a Typer, Click, or
+`argparse` surface it likes keeps it. If you use Typer, `honbu.cli.presets` gives you
+ready-made option aliases (`ConfigOpt`, `ResolvedOpt`, `ForkFromOpt`, `ClobberOpt`,
+`ResumeOpt`, etc.) and `HYDRA_CONTEXT_SETTINGS`; for any other parser, `honbu.cli`
+provides `split_dash_rule`, `validate_override_tokens`, `select_config_source`, and
+`exit_on_refusal`. See [Register commands](commands.md).
 
 What you delete here is usually substantial — run-directory naming, collision
 handling, the resume flag, the manifest, the "did I already do this step" logic, and
@@ -59,10 +98,12 @@ provenance.
 
 ## 5. Take the operations you want
 
-Sweeps, comparison and materialization are separate imports. Add
-[sweeps](sweeps.md) when you want one configuration to become many runs; add
-[comparison](compare.md) when you need to know why two runs differ. Neither is
-required, and nothing below them depends on them.
+Sweeps, comparison, compatibility gating, and materialization are separate imports.
+Add [sweeps](sweeps.md) when you want one configuration to become many runs; add
+[comparison](compare.md) when you need to know why two runs differ or whether two
+runs are compatible for merging; add [materialization](materialize.md) when users
+should be able to scaffold and diff local config trees. Neither is required, and
+nothing below them depends on them.
 
 ## What to expect
 
@@ -84,14 +125,14 @@ previously getting silently. See [Refusals](../concepts/refusals.md).
 
 ## A checklist
 
-- [ ] Root is a `StrictModel`, flat, with the requirable blocks
-- [ ] `validate_root_contract` runs at import
+- [ ] Root is a `StrictModel`, flat, with the requirable blocks (`output_root` is `PortablePath`)
+- [ ] `validate_root_contract` runs at import (or via `ProjectSpec`)
 - [ ] Every path is `PortablePath`; no manual anchoring remains
 - [ ] A `FieldHash` covers what decides behavior, and nothing that does not
 - [ ] Input-reading digests declare `reads_inputs=True` and are completed in the run
-- [ ] Identity fields are `DERIVED` and bound with `FromHash`
-- [ ] Each command declares its target, steps, scope and configuration sources
+- [ ] Identity fields are `DERIVED` and bound with `FromHash` (or use `HashedRuntimeConfig`)
+- [ ] Each command declares its target, steps, scope, and configuration sources
 - [ ] Expensive work is inside `run.step()`
 - [ ] `record_best` is called, and a test asserts it
-- [ ] `APP.validate()` runs in a test
+- [ ] `ProjectSpec` and `CommandRegistry` construct cleanly in a test
 - [ ] The packaged defaults compose and validate in a test

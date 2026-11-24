@@ -23,10 +23,14 @@ from pydantic import BaseModel
 
 from honbu.errors import DeclarationError
 from honbu.core.markers import (
+    DIRECTIVE,
     IDENTITY,
+    FromHash,
+    PathMarker,
     PortablePath,
     ResolvedString,
     TemplatedIdentity,
+    field_marker,
 )
 from honbu.core.model import StrictModel
 
@@ -106,6 +110,19 @@ class RuntimeConfig(StrictModel):
     sweep_id: Annotated[ResolvedString, IDENTITY] = None
 
 
+class HashedRuntimeConfig(RuntimeConfig):
+    """Opt-in runtime block pre-wired to the conventional ``config_hash`` identity.
+
+    Bare :class:`RuntimeConfig` binds no hash and defaults ``config_id`` to null so
+    a project declaring no hashes remains valid (D21). Projects adopting the
+    conventional ``config_hash`` → ``config_id`` coolname wiring use this subclass
+    directly instead of repeating marker boilerplate.
+    """
+
+    config_hash: Annotated[ResolvedString, FromHash(CONFIG_HASH_NAME)] = None
+    config_id: TemplatedIdentity | None = "{runtime.config_hash:coolname}"
+
+
 class OutputBlock(StrictModel):
     """A family of outputs with one directory.
 
@@ -117,7 +134,7 @@ class OutputBlock(StrictModel):
     """
 
     dir: PortablePath | None = None
-    dir_template: str | None = None
+    dir_template: Annotated[str | None, DIRECTIVE] = None
 
 
 class OutputLeaf(StrictModel):
@@ -131,7 +148,7 @@ class OutputLeaf(StrictModel):
 
     enabled: bool = True
     dir: PortablePath | None = None
-    dir_template: str | None = None
+    dir_template: Annotated[str | None, DIRECTIVE] = None
 
 
 #: Field name → required base type. ``output_root`` is checked by annotation.
@@ -187,10 +204,16 @@ def validate_root_contract(root_type: type[BaseModel]) -> None:
                 f"not {info.annotation!r}"
             )
 
-    if "output_root" not in fields:
+    output_root = fields.get("output_root")
+    if output_root is None:
         raise DeclarationError(
             f"{root_type.__name__} is missing 'output_root', the containment root "
             "for destructive operations"
+        )
+    if field_marker(output_root, PathMarker) is None:
+        raise DeclarationError(
+            f"{root_type.__name__}.output_root must carry PathMarker (use PortablePath) "
+            "so it cannot enter behavioral digests"
         )
 
     if not output_block_fields(root_type):

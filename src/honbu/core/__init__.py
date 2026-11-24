@@ -14,8 +14,10 @@ by hand, and one convenience import would quietly end that.
 """
 
 from honbu.core.blocks import (
+    CONFIG_HASH_NAME,
     REQUIRED_BLOCKS,
     ExperimentConfig,
+    HashedRuntimeConfig,
     OutputBlock,
     OutputLeaf,
     RuntimeConfig,
@@ -40,6 +42,8 @@ from honbu.core.hashes import (
     HashResult,
     SourceHash,
     artifact_filename,
+    project_fields,
+    project_model,
     read_hash_entries,
     validate_identity_fields,
     verify_hash_entries,
@@ -111,6 +115,7 @@ from honbu.core.templates import (
 __all__ = [
     "BUILTIN_FUNCTIONS",
     "CANONICAL_ENCODER_VERSION",
+    "CONFIG_HASH_NAME",
     "DEFER",
     "DERIVED",
     "DIRECTIVE",
@@ -134,6 +139,7 @@ __all__ = [
     "HashEntry",
     "HashRegistry",
     "HashResult",
+    "HashedRuntimeConfig",
     "IdentityMarker",
     "OutputBlock",
     "OutputLeaf",
@@ -180,6 +186,8 @@ __all__ = [
     "path_length_refusal",
     "prepare_scope",
     "prepare_target",
+    "project_fields",
+    "project_model",
     "prune_path",
     "read_existing_manifest",
     "read_hash_entries",

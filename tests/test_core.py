@@ -18,24 +18,33 @@ from pydantic import Field, StringConstraints, ValidationError
 
 from honbu import (
     DEFER,
-    MANIFEST_NAME,
-    DerivedMarker,
+    ByteHash,
+    CanonicalizationError,
+    DeclarationError,
     Deferred,
     FannedHash,
     FieldHash,
     FromHash,
     HashRegistry,
-    PathMarker,
     PortablePath,
     RefusalError,
     ResolvedString,
     SourceHash,
     StrictModel,
+    TemplateError,
+    backend_kwargs,
+    project_fields,
+    unmarked_path_fields,
+    validate_identity_fields,
+)
+from honbu.core import (
+    MANIFEST_NAME,
+    DerivedMarker,
+    PathMarker,
     TemplateContext,
     TemplateFunctionSpec,
     TemplateRegistry,
     atomic_write_text,
-    backend_kwargs,
     canonical_bytes,
     check_field_path,
     excluded_source_paths,
@@ -47,13 +56,10 @@ from honbu import (
     render_template,
     sanitize_path_component,
     sanitization_warning,
-    unmarked_path_fields,
-    validate_identity_fields,
     verify_hash_entries,
     write_hash_entries,
 )
-from honbu.errors import CanonicalizationError, DeclarationError, TemplateError
-from honbu.core.hashes import ByteHash, declared_path_exists, project_fields
+from honbu.core.hashes import declared_path_exists
 
 # --------------------------------------------------------------------------- #
 # schemas used across the tests
@@ -155,6 +161,25 @@ def test_unencodable_type_names_the_path():
 def test_set_is_refused_because_it_has_no_canonical_order():
     with pytest.raises(CanonicalizationError, match="set is not canonically encodable"):
         canonical_bytes({"x": {1, 2}})
+
+
+def test_pinned_tricky_tree_digest():
+    """Pinned cross-project canonical JSON bytes and SHA-256 digest (spec 1.2 / 7.9)."""
+    tree = {
+        "z_nested": {"b": -0.0, "a": 0.1 + 0.2, "precise": 1.234567890123456},
+        "a_unicode": "caf\u00e9 \u672c\u90e8",
+        "m_seq": [1, True, False, None, [0.0, -0.0, {"k": "v"}]],
+    }
+    expected_bytes = (
+        b'{"a_unicode":"caf\xc3\xa9 \xe6\x9c\xac\xe9\x83\xa8",'
+        b'"m_seq":[1,true,false,null,[0.0,0.0,{"k":"v"}]],'
+        b'"z_nested":{"a":0.3,"b":0.0,"precise":1.23456789012}}'
+    )
+    assert canonical_bytes(tree) == expected_bytes
+    assert (
+        hash_source(tree)
+        == "sha256:0b1ae6ef14e72996abcc79b9a984e196d7c7797905ab511f1fc94cddde7c5822"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -981,3 +1006,244 @@ def test_a_sequence_is_addressed_by_index():
 
 def test_the_container_key_itself_may_be_the_leaf():
     assert _problem("model.heads.species", data=COMPOSED_AXES, traverse_containers=True) is None
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1 additions: HashedRuntimeConfig, 7.9, 7.12, 5.1
+# --------------------------------------------------------------------------- #
+
+
+def test_hashed_runtime_config_preset_wires_config_hash_and_config_id():
+    from honbu.core import (
+        CONFIG_HASH_NAME,
+        ExperimentConfig,
+        HashedRuntimeConfig,
+        OutputBlock,
+        RuntimeConfig,
+        identity_bindings,
+        validate_root_contract,
+    )
+
+    assert CONFIG_HASH_NAME == "config_hash"
+    assert identity_bindings(RuntimeConfig) == ()
+    assert identity_bindings(HashedRuntimeConfig) == ((("config_hash",), "config_hash"),)
+    assert HashedRuntimeConfig.model_fields["config_id"].default == "{runtime.config_hash:coolname}"
+
+    class PresetRoot(StrictModel):
+        experiment: ExperimentConfig
+        runtime: HashedRuntimeConfig = Field(default_factory=HashedRuntimeConfig)
+        output_root: PortablePath = Path("./runs")
+        outputs: OutputBlock = Field(default_factory=OutputBlock)
+
+    validate_root_contract(PresetRoot)
+    registry = HashRegistry([FieldHash(name=CONFIG_HASH_NAME, include=["experiment"])])
+    assert validate_identity_fields(PresetRoot, registry) == (
+        (("runtime", "config_hash"), "config_hash"),
+    )
+
+
+def test_source_hash_and_fanned_hash_versioned_opt_out():
+    unversioned = SourceHash(
+        name="config_hash",
+        build=lambda ctx: {"epochs": 10},
+        versioned=False,
+    )
+    optional_version = SourceHash(
+        name="custom_cfg",
+        build=lambda ctx: {"version": "3", "epochs": 10},
+        versioned=False,
+    )
+    fanned_unversioned = FannedHash(
+        name="head_hash",
+        build=lambda ctx: {"a": {"classes": 2}, "b": {"classes": 4}},
+        versioned=False,
+    )
+    result = HashRegistry([unversioned, optional_version, fanned_unversioned]).compute({})
+    assert result.entries["config_hash"].version is None
+    assert result.entries["custom_cfg"].version == "3"
+    assert result.entries["head_hash.a"].version is None
+    assert result.entries["head_hash.b"].version is None
+
+
+def test_from_hash_cannot_target_deferred_input_reading_hash():
+    class BadBlock(StrictModel):
+        dataset_hash: Annotated[ResolvedString, FromHash("dataset_hash")] = None
+
+    class BadRoot(StrictModel):
+        block: BadBlock = Field(default_factory=BadBlock)
+
+    registry = HashRegistry(
+        [
+            SourceHash(
+                name="dataset_hash",
+                build=lambda ctx: {"version": "1", "rows": 1},
+                reads_inputs=True,
+            )
+        ]
+    )
+    with pytest.raises(DeclarationError, match="deferred past resolution"):
+        validate_identity_fields(BadRoot, registry)
+
+
+def test_project_model_applies_marker_exclusions_on_submodels_and_containers():
+    from honbu.core import DIRECTIVE, project_model
+
+    class Sub(StrictModel):
+        manifest: PortablePath
+        layers: int = 4
+        note: Annotated[str | None, DIRECTIVE] = "ignore-me"
+        computed: ResolvedString = None
+
+    class Parent(StrictModel):
+        sub: Sub
+        subs: dict[str, Sub] = Field(default_factory=dict)
+        keep: str = "yes"
+        drop_me: str = "no"
+
+    parent = Parent(
+        sub=Sub(manifest=Path("/a/b"), layers=4, note="x", computed="sha256:1"),
+        subs={"h1": Sub(manifest=Path("/c/d"), layers=8)},
+    )
+    assert project_model(parent.sub) == {"layers": 4}
+    assert project_model(parent, exclude=("drop_me",)) == {
+        "sub": {"layers": 4},
+        "subs": {"h1": {"layers": 8}},
+        "keep": "yes",
+    }
+    assert project_model(parent, include=("sub", "keep")) == {
+        "sub": {"layers": 4},
+        "keep": "yes",
+    }
+
+
+def test_deterministic_id_is_thread_safe():
+    from concurrent.futures import ThreadPoolExecutor
+
+    from honbu.core import deterministic_id
+
+    inputs = [(f"domain-{i % 3}", f"value-{i}") for i in range(40)]
+    expected = [deterministic_id(d, v) for d, v in inputs]
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(deterministic_id, d, v) for d, v in inputs * 4]
+        actual = [f.result() for f in futures]
+
+    assert actual == expected * 4
+
+
+def test_output_block_and_leaf_dir_template_are_directive_excluded():
+    from honbu.core import OutputBlock, OutputLeaf
+
+    class Outputs(OutputBlock):
+        leaf: OutputLeaf = Field(default_factory=OutputLeaf)
+
+    class R(StrictModel):
+        outputs: Outputs = Field(default_factory=Outputs)
+        epochs: int = 10
+
+    excluded = excluded_source_paths(R)
+    assert ("outputs", "dir_template") in excluded
+    assert ("outputs", "leaf", "dir_template") in excluded
+    assert ("outputs", "dir") in excluded
+    assert ("outputs", "leaf", "dir") in excluded
+
+    decl = FieldHash("cfg", include=["outputs", "epochs"])
+    a = R(outputs=Outputs(dir_template="a/{runtime.run_id}", leaf=OutputLeaf(dir_template="x")))
+    b = R(outputs=Outputs(dir_template="b/{runtime.run_id}", leaf=OutputLeaf(dir_template="y")))
+    assert project_fields(decl, {"config": a}) == project_fields(decl, {"config": b})
+
+
+def test_backend_kwargs_python_json_and_recursive_modes():
+    class Nested(StrictModel):
+        lr: float = 0.01
+        momentum: float | Deferred = DEFER
+
+    class Block(StrictModel):
+        size: tuple[int, int] = (224, 224)
+        cache: Path = Path("/tmp/cache")
+        patience: int | Deferred = DEFER
+        nested: Nested = Field(default_factory=Nested)
+
+    block = Block()
+    py = backend_kwargs(block)
+    assert py["size"] == (224, 224) and isinstance(py["size"], tuple)
+    assert py["cache"] == Path("/tmp/cache") and isinstance(py["cache"], Path)
+    assert "patience" not in py
+    assert py["nested"]["momentum"] == DEFER
+
+    rec = backend_kwargs(block, recursive=True)
+    assert "momentum" not in rec["nested"]
+    assert rec["nested"]["lr"] == 0.01
+
+    js = backend_kwargs(block, mode="json", recursive=True)
+    assert js["size"] == [224, 224]
+    assert js["cache"] == "/tmp/cache"
+    assert "momentum" not in js["nested"]
+
+
+def test_minor_version_discipline_guard():
+    """Task 5.1 / D7: a minor framework version never changes encoder or recipe versions."""
+    import tomllib
+
+    import honbu
+    from honbu.core import CANONICAL_ENCODER_VERSION
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    parsed = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    assert honbu.__version__ == parsed["project"]["version"]
+    assert CANONICAL_ENCODER_VERSION == "1"
+
+    # Hash entries record encoder_version and per-hash recipe version, never honbu.__version__.
+    registry = HashRegistry([FieldHash("config_hash", include=["name"])], root_type=Root)
+    entry = registry.compute({"config": make_root()}).entries["config_hash"]
+    assert entry.encoder_version == CANONICAL_ENCODER_VERSION
+    assert honbu.__version__ not in str(entry.source)
+    assert entry.value == hash_source({"name": "exp"})
+
+
+def test_template_context_now_and_edge_cases():
+    ctx = TemplateContext.now(extras={"command": "train"})
+    assert ctx.extras["command"] == "train"
+    assert len(ctx.seed) == 16
+
+    # Sequence index lookup in templates
+    res = render_template(
+        "{items.1.name}",
+        {"items": [{"name": "first"}, {"name": "second"}]},
+        context=ctx,
+        registry=TemplateRegistry(),
+    )
+    assert res.text == "second"
+
+    # Misspelled template function / invalid format specifier wraps into TemplateError
+    with pytest.raises(TemplateError, match="neither a registered template function"):
+        render_template(
+            "{name:slugg}",
+            {"name": "reef"},
+            context=ctx,
+            registry=TemplateRegistry(),
+        )
+
+
+def test_target_refusals_are_flag_agnostic_with_optional_cli_hint_and_file_leaf(tmp_path):
+    root = tmp_path / "runs"
+    target = root / "exp" / "a"
+    target.mkdir(parents=True)
+    (target / MANIFEST_NAME).write_text('{"state": "completed", "command": ["train"]}')
+
+    with pytest.raises(RefusalError) as default_err:
+        prepare_target(target, containment_root=root)
+    assert "--clobber" not in str(default_err.value)
+    assert "clobber=True" in str(default_err.value)
+
+    with pytest.raises(RefusalError) as hinted_err:
+        prepare_target(target, containment_root=root, cli_hint="--overwrite to replace")
+    assert "--overwrite to replace" in str(hinted_err.value)
+
+    # prepare_scope handles a regular file at a leaf path (matching prepare_target)
+    leaf_file = target / "figures"
+    leaf_file.write_text("not-a-dir")
+    with pytest.raises(RefusalError, match="exists as a file"):
+        prepare_scope(target, (leaf_file,), containment_root=root)
+    prepare_scope(target, (leaf_file,), containment_root=root, clobber=True)
+    assert leaf_file.is_dir()

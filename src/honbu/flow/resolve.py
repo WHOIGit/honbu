@@ -35,8 +35,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from honbu.errors import RefusalError
+from honbu.errors import DeclarationError, RefusalError
 from honbu.flow.commands import CommandSpec
+from honbu.flow.compose import refuse_active_sweep_block
+from honbu.flow.project import ProjectSpec
 from honbu.core.blocks import OutputBlock, OutputLeaf, output_block_fields
 from honbu.core.hashes import HashEntry, HashRegistry
 from honbu.core.markers import (
@@ -49,7 +51,7 @@ from honbu.core.markers import (
     marked_field_paths,
     prune_path,
 )
-from honbu.core.paths import is_cwd_relative, path_length_refusal
+from honbu.core.paths import is_absolute_uri, is_cwd_relative, path_length_refusal
 from honbu.core.templates import (
     TemplateContext,
     TemplateRegistry,
@@ -160,7 +162,9 @@ def _authored_value(composed: Mapping[str, Any], dotted: str) -> Any:
 
 def anchor(value: Path, *, base: Path) -> Path:
     """Join a stored output path to its anchor. Absolute values pass through."""
-    return value if value.is_absolute() else (base / value)
+    if value.is_absolute() or is_absolute_uri(str(value)):
+        return value
+    return base / value
 
 
 def _iter_leaves(block: OutputBlock) -> list[tuple[str, OutputLeaf]]:
@@ -200,18 +204,98 @@ def _set_path(model: BaseModel, path: Sequence[str], value: Any) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _authored_values_at(
+    node: Any, path: Sequence[str], prefix: tuple[str, ...] = ()
+) -> list[tuple[str, Any]]:
+    """Return non-null authored (dotted_path, value) entries matching ``path``."""
+    if not path:
+        return []
+    head, *rest = path
+    found: list[tuple[str, Any]] = []
+    if head == WILDCARD:
+        if isinstance(node, Mapping):
+            for key, child in node.items():
+                found.extend(_authored_values_at(child, rest, (*prefix, str(key))))
+        elif isinstance(node, (list, tuple)):
+            for index, child in enumerate(node):
+                found.extend(_authored_values_at(child, rest, (*prefix, str(index))))
+        return found
+    if not isinstance(node, Mapping) or head not in node:
+        return []
+    value = node[head]
+    here = (*prefix, head)
+    if not rest:
+        if value is not None:
+            found.append((".".join(here), value))
+        return found
+    return _authored_values_at(value, rest, here)
+
+
+def _check_no_authored_resolved_only(
+    composed: Mapping[str, Any], root_type: type[BaseModel]
+) -> None:
+    offenders: list[str] = []
+    for path in marked_field_paths(root_type, ResolvedOnlyMarker):
+        for dotted_path, _ in _authored_values_at(composed, path):
+            offenders.append(dotted_path)
+    if offenders:
+        listed = ", ".join(sorted(offenders))
+        raise RefusalError(
+            f"resolved-only field(s) may not be authored: {listed}. "
+            "Resolution populates these fields; omit them or pass replay=True "
+            "when replaying a persisted resolved configuration."
+        )
+
+
+def _absolutize_leaf(value: Any, cwd: Path) -> Any:
+    if isinstance(value, Path):
+        if value.is_absolute() or is_absolute_uri(str(value)):
+            return value
+        return (cwd / value).resolve()
+    if isinstance(value, list):
+        return [_absolutize_leaf(item, cwd) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_absolutize_leaf(item, cwd) for item in value)
+    if isinstance(value, dict):
+        return {key: _absolutize_leaf(item, cwd) for key, item in value.items()}
+    return value
+
+
+def _absolutize_at(node: Any, path: Sequence[str], cwd: Path) -> None:
+    if node is None or not path:
+        return
+    head, *rest = path
+    if head == WILDCARD:
+        if isinstance(node, Mapping):
+            for child in node.values():
+                _absolutize_at(child, rest, cwd)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                _absolutize_at(child, rest, cwd)
+        return
+    if not hasattr(node, head):
+        return
+    value = getattr(node, head)
+    if value is None:
+        return
+    if not rest:
+        updated = _absolutize_leaf(value, cwd)
+        if updated != value:
+            setattr(node, head, updated)
+    else:
+        _absolutize_at(value, rest, cwd)
+
+
 def _phase2_input_paths(config: BaseModel, *, cwd: Path, skip: frozenset[str]) -> None:
-    """Absolutize authored input paths. Output paths are handled in 6 and 7."""
+    """Absolutize authored input paths, including inside containers.
+
+    Output blocks are skipped here because phases 6 and 7 own their anchoring.
+    """
     for path in marked_field_paths(type(config), PathMarker):
         dotted = ".".join(path)
-        if "*" in path or dotted in skip or dotted.split(".")[0] in skip:
+        if dotted in skip or path[0] in skip:
             continue
-        try:
-            value = _get(config, dotted)
-        except AttributeError:
-            continue
-        if isinstance(value, Path) and not value.is_absolute():
-            _set(config, dotted, (cwd / value).resolve())
+        _absolutize_at(config, path, cwd)
 
 
 def _phase4_identities(
@@ -332,8 +416,9 @@ def _phase6_target(
             if dotted in referenced:
                 raise RefusalError(
                     f"{command.invocation} target template names {dotted!r}, which is "
-                    "fed by a hash deferred to work. The output directory must be "
-                    "knowable before work begins."
+                    "unassigned because its hash was not produced during resolution "
+                    "(deferred or unavailable). The output directory must be knowable "
+                    "before work begins."
                 )
         rendered = render_template(
             template,
@@ -360,40 +445,109 @@ def _phase6_target(
     return absolute, tuple(warnings)
 
 
+def _override_keys(overrides: Sequence[str]) -> frozenset[str]:
+    keys: set[str] = set()
+    for token in overrides:
+        body = token.lstrip("+~")
+        if not body:
+            continue
+        key = body.split("=", 1)[0].strip()
+        if "@" in key:
+            key = key.split("@", 1)[0]
+        key = key.replace("/", ".")
+        if key:
+            keys.add(key)
+    return frozenset(keys)
+
+
 def _phase7_leaves(
     config: BaseModel,
     command: CommandSpec,
+    composed: Mapping[str, Any],
     *,
+    target: Path | None,
     context: TemplateContext,
     registry: TemplateRegistry,
     replay: bool,
-) -> None:
+    cwd: Path,
+    overridden_keys: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
     """Resolve the target block's leaves. Each stays relative to its block."""
     if command.target is None:
-        return
+        return ()
     block_path = command.target.resolved.rsplit(".", 1)[0]
     block = _get(config, block_path)
     if not isinstance(block, OutputBlock):
-        return
+        return ()
+
+    path_fields = frozenset(
+        ".".join(p) for p in marked_field_paths(type(config), PathMarker)
+    )
+    scope_set = set(command.scope)
+    warnings: list[str] = []
 
     for name, leaf in _iter_leaves(block):
-        if not replay and leaf.dir is not None and leaf.dir_template is not None:
+        leaf_path = f"{block_path}.{name}"
+        dir_path = f"{leaf_path}.dir"
+        tpl_path = f"{leaf_path}.dir_template"
+        authored_dir = _authored(composed, dir_path)
+        authored_tpl = _authored(composed, tpl_path)
+
+        if not replay and authored_dir and authored_tpl:
             raise RefusalError(
-                f"{block_path}.{name} sets both dir and dir_template; author one"
+                f"{leaf_path} sets both dir and dir_template; author one"
             )
-        if leaf.dir is None and leaf.dir_template is not None:
+
+        in_scope = leaf_path in scope_set or dir_path in scope_set
+        augment_rerender = (
+            replay
+            and command.mode == "augment"
+            and in_scope
+            and leaf.dir_template is not None
+            and dir_path not in overridden_keys
+        )
+        should_render = (
+            augment_rerender
+            or (
+                not replay
+                and authored_tpl
+                and not authored_dir
+                and leaf.dir_template is not None
+            )
+            or (leaf.dir is None and leaf.dir_template is not None)
+        )
+
+        if should_render:
+            assert leaf.dir_template is not None
             rendered = render_template(
                 leaf.dir_template,
                 config.model_dump(mode="json"),
                 context=context,
                 registry=registry,
+                path_fields=path_fields,
             )
-            leaf.dir = Path(rendered.text)
+            warnings.extend(rendered.warnings)
+            text = rendered.text
+            leaf.dir = (cwd / text).resolve() if is_cwd_relative(text) else Path(text)
+        elif leaf.dir is not None:
+            authored = _authored_value(composed, dir_path)
+            text = str(authored) if authored is not None else str(leaf.dir)
+            if is_cwd_relative(text):
+                leaf.dir = (cwd / text).resolve()
+
         if leaf.enabled and leaf.dir is None:
             raise RefusalError(
-                f"{block_path}.{name} is enabled but has no directory; give it a "
+                f"{leaf_path} is enabled but has no directory; give it a "
                 "dir or a dir_template, or disable it"
             )
+
+        if target is not None and leaf.dir is not None:
+            anchored = anchor(leaf.dir, base=target)
+            refusal = path_length_refusal(anchored)
+            if refusal is not None:
+                raise RefusalError(refusal)
+
+    return tuple(warnings)
 
 
 def _absolute_view(portable: BaseModel, command: CommandSpec, *, root: Path) -> BaseModel:
@@ -432,14 +586,18 @@ def _absolute_view(portable: BaseModel, command: CommandSpec, *, root: Path) -> 
 def resolve(
     composed: Mapping[str, Any],
     *,
-    root_type: type[BaseModel],
     command: CommandSpec,
-    hashes: HashRegistry,
-    context: TemplateContext,
+    root_type: type[BaseModel] | None = None,
+    hashes: HashRegistry | None = None,
+    context: TemplateContext | None = None,
     templates: TemplateRegistry | None = None,
+    project: ProjectSpec | None = None,
     cwd: Path | None = None,
     existing_target: Path | None = None,
     replay: bool = False,
+    sweep_id: str | None = None,
+    overrides: Sequence[str] = (),
+    allow_sweep_block: bool = False,
 ) -> Resolution:
     """Walk the eight phases and return a pure :class:`Resolution`.
 
@@ -447,15 +605,41 @@ def resolve(
     rather than re-rendering the template — which is also what lets configuration
     indices deduplicate, since a re-rendered ``{:timestamp}`` would make every
     invocation's resolved configuration unique.
+
+    ``context`` defaults to :meth:`TemplateContext.now` when omitted.
+    ``sweep_id`` assigns ``runtime.sweep_id`` explicitly during phase 4 so sweep
+    preparation never has to smuggle a resolved-only field into ``composed``.
     """
-    registry = templates or TemplateRegistry()
-    if "command" not in context.extras:
-        context = replace(context, extras={**context.extras, "command": command.slug})
+    resolved_root = (
+        root_type if root_type is not None else (project.root_type if project else None)
+    )
+    if resolved_root is None:
+        raise DeclarationError("resolve() requires root_type or project")
+    resolved_hashes = (
+        hashes
+        if hashes is not None
+        else (project.hashes if project is not None else HashRegistry([]))
+    )
+    resolved_templates = (
+        templates
+        if templates is not None
+        else (project.templates if project is not None else None)
+    )
+    registry = resolved_templates or TemplateRegistry()
+    ctx = context if context is not None else TemplateContext.now()
+    if "command" not in ctx.extras:
+        ctx = replace(ctx, extras={**ctx.extras, "command": command.slug})
     base = (cwd or Path.cwd()).resolve()
     warnings: list[str] = []
 
+    if not allow_sweep_block:
+        refuse_active_sweep_block(composed, invocation=command.invocation)
+
+    if not replay:
+        _check_no_authored_resolved_only(composed, resolved_root)
+
     # 1 — validate
-    config = root_type.model_validate(dict(composed))
+    config = resolved_root.model_validate(dict(composed))
 
     # 2 — input paths. Output blocks are skipped; 6 and 7 own those.
     # Recognition goes through the shared walker rather than a local isinstance test:
@@ -463,10 +647,12 @@ def resolve(
     # consequence is silent — phase 2 absolutizes the block's directory against the
     # working directory, phase 6 then reads it as a pinned literal, and the run lands
     # next to the shell instead of under the output root.
-    _phase2_input_paths(config, cwd=base, skip=frozenset(output_block_fields(root_type)))
+    _phase2_input_paths(
+        config, cwd=base, skip=frozenset(output_block_fields(resolved_root))
+    )
 
     # 3 — config-only hashes for this command
-    result = hashes.compute(
+    result = resolved_hashes.compute(
         {"config": config, "command": command.slug},
         only=tuple(command.hashes) or None,
         input_reading=False,
@@ -474,11 +660,11 @@ def resolve(
 
     # 4 — identities into their declared fields
     unassigned = _phase4_identities(config, result.entries, result.deferred)
+    if sweep_id is not None and hasattr(config, "runtime") and hasattr(config.runtime, "sweep_id"):
+        config.runtime.sweep_id = sweep_id
 
     # 5 — template-valued fields, so the target may reference them
-    warnings.extend(
-        _phase5_templated(config, context=context, registry=registry)
-    )
+    warnings.extend(_phase5_templated(config, context=ctx, registry=registry))
 
     # 6 — the target
     if command.mode == "augment":
@@ -504,7 +690,7 @@ def resolve(
             config,
             command,
             composed,
-            context=context,
+            context=ctx,
             registry=registry,
             unassigned=unassigned,
             replay=replay,
@@ -513,11 +699,23 @@ def resolve(
         warnings.extend(target_warnings)
 
     # 7 — leaves under the target
-    _phase7_leaves(config, command, context=context, registry=registry, replay=replay)
+    warnings.extend(
+        _phase7_leaves(
+            config,
+            command,
+            composed,
+            target=target,
+            context=ctx,
+            registry=registry,
+            replay=replay,
+            cwd=base,
+            overridden_keys=_override_keys(overrides),
+        )
+    )
 
     # 8 — revalidate. Project validators run a second time here, against a tree
     # whose identities are set and whose input paths are absolute.
-    portable = root_type.model_validate(config.model_dump(mode="python"))
+    portable = resolved_root.model_validate(config.model_dump(mode="python"))
 
     root_dir = (
         Path(_get(portable, command.target.root)).resolve()
@@ -530,7 +728,7 @@ def resolve(
         config=absolute,
         portable=portable,
         command=command,
-        context=context,
+        context=ctx,
         hashes=result.entries,
         deferred=result.deferred,
         target=target,

@@ -9,9 +9,9 @@
 | `invocations` | one entry per command that touched this run: argv, command, configuration index |
 | `hashes` | each declared digest: value, recipe version, and for a deferred one, the inputs reported |
 | `artifacts` | name → path, relative when inside the run |
-| `progress` | the last `record_progress` |
+| `progress` | incrementally merged via `record_progress` (or replaced wholesale via `set_progress`) |
 | `best` | the last `record_best` |
-| `parent` | lineage, when the run was continued from another |
+| `parent` | lineage (`run_dir`, `config_hash`, `artifact_key`, `artifact`), when forked via `--fork-from` |
 
 ## States
 
@@ -24,8 +24,9 @@
 | `interrupted` | a signal arrived |
 | `failed` | an exception escaped |
 
-Everything but `completed` is resumable. The state is read off the last reserved
-event rather than stored, so it cannot disagree with the timeline.
+Everything but `completed` is resumable. `Manifest.load(run_dir)` derives `state`
+from the last reserved event on the timeline by default (`derive_state=True`), so it
+cannot disagree with the timeline.
 
 ## Reading one
 
@@ -44,9 +45,9 @@ cannot forge a state it did not reach.
 ## What is beside it
 
 ```text
-config/composed.yaml    what was authored, portable
-config/resolved.yaml    what ran, absolute
-hashes/<name>.json      one artifact per digest
+config/composed.yaml         what was authored, portable
+config/resolved.yaml         what ran, absolute
+config/hashes/<name>.json    one artifact per digest
 ```
 
 The bundle is written before your handler is called, so a run that dies immediately

@@ -15,16 +15,18 @@ and the results are quietly incomparable.
 
 Honbu's answer is not a base class. It is this:
 
-## Everything is declared exactly once
+## Everything is declared once
 
-A command declares its name, its options and their arity, its positionals, its
-target, its steps, and its write scope. From that one declaration Honbu derives the
-argv split, the help text, the resolution order, the collision check, and the blast
-radius of `--clobber`. There is no second place to update, so there is nothing to
-keep in step.
+A `CommandSpec` declares its mode, target, steps, hashes, accepted configuration
+sources, and write scope. A `ProjectSpec` bundles the root type, composition search
+path, and hash registry. From those declarations Honbu drives configuration loading,
+resolution order, collision checks, and the blast radius of `--clobber` — with no
+CLI framework coupled into `honbu.flow`.
 
-This is why Honbu has no CLI library. Typer would be a second source of truth for a
-surface Honbu already declares — the drift pattern, reintroduced at the front door.
+Your project owns its own command-line parser (Typer, Click, `argparse`, or plain
+Python calls). When you want standard flags and override handling without
+boilerplate, `honbu.cli` provides library-agnostic helpers and `honbu.cli.presets`
+provides opt-in Typer option aliases and mountable commands.
 
 ## Identity is a property of the configuration, not of the clock
 
@@ -62,9 +64,9 @@ explaining — the ones that crashed — are the ones with nothing written down.
 ## You keep the main loop
 
 Honbu never inverts control. Your project calls it; it does not call you. There is
-no `Trainer` to subclass and no lifecycle hook to fill in. A project that likes its
-own argument parser calls `dispatch_command()` from its own callback and keeps
-everything else.
+no `Trainer` to subclass, no CLI dispatcher to yield control to, and no lifecycle
+hook to fill in. Your own CLI callback calls `load_config`, `resolve`, and
+`open_run` directly, or invokes them from a notebook or script with no CLI at all.
 
 The layers make that concrete: core, flow, and operations depend one way only, and
 a project that wants identity and provenance without commands imports only the

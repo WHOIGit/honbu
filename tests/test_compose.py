@@ -1,9 +1,9 @@
-"""Composition: the argv grammar, configuration sources, and the search path.
+"""Composition, typed configuration loading, and search path precedence.
 
-The split, the source rules and the precedence are what actually drifted between
-the two projects, and are what these tests pin. The compositor is a core
-dependency (D20), so composition itself is exercised end to end rather than only
-up to the call.
+CLI token routing and source selection moved to opt-in ``honbu.cli`` (tested in
+``tests/test_cli.py``). This file pins pure-Python composition, search paths,
+typed ``load_config`` / ``parent_record``, bare-comma sweep refusal, and
+open-mapping sweep override rewriting.
 """
 
 from __future__ import annotations
@@ -11,187 +11,36 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import Field
 
-from honbu import RefusalError
-from honbu.errors import DeclarationError
+from honbu import (
+    DeclarationError,
+    ExperimentConfig,
+    FieldHash,
+    HashRegistry,
+    HashedRuntimeConfig,
+    OutputBlock,
+    PortablePath,
+    RefusalError,
+    StrictModel,
+)
 from honbu.flow import (
+    CommandRegistry,
+    CommandSpec,
+    ComposeSpec,
+    Manifest,
+    ProjectSpec,
+    TargetSpec,
+    build_search_path,
     check_overrides,
     compose_config,
     compose_file,
     force_add_sweep_overrides,
-    CommandRegistry,
-    CommandSpec,
-    ComposeSpec,
-    OptionSpec,
-    Positional,
-    TargetSpec,
-    build_search_path,
-    parse_invocation,
-    selected_source,
-    split_argv,
+    load_config,
+    open_run,
+    parent_record,
+    resolve,
 )
-
-# --------------------------------------------------------------------------- #
-# the argv grammar
-# --------------------------------------------------------------------------- #
-
-
-def test_assignments_are_overrides_and_flags_are_options():
-    split = split_argv(["experiment=reef-v3", "--clobber", "training.epochs=50"])
-    assert split.overrides == ("experiment=reef-v3", "training.epochs=50")
-    assert split.options == {"--clobber": True}
-    assert split.positionals == ()
-
-
-def test_group_selection_needs_no_special_handling():
-    """`data=nes-hf` and `training.epochs=50` are the same kind of token; there is
-    no reserved group and no named-experiment root source."""
-    split = split_argv(["data=nes-hf"])
-    assert split.overrides == ("data=nes-hf",)
-
-
-def test_compositor_override_prefixes_route_to_overrides():
-    split = split_argv(["+new.key=1", "++forced.key=2", "~drop.key=x"])
-    assert len(split.overrides) == 3
-
-
-def test_a_valueless_deletion_is_an_override_not_a_positional():
-    """The one override form the contains-an-equals rule cannot see.
-
-    `~key` is how the compositor deletes, and it carries no value. Read as a
-    positional it was reported as an arity error — a message about neither what was
-    written nor what to do — which made "turn this sweep off for one run" a thing
-    the grammar allowed and the parser did not.
-    """
-    split = split_argv(["~sweep.axes", "~sweep.covariant_axes"])
-    assert split.overrides == ("~sweep.axes", "~sweep.covariant_axes")
-    assert split.positionals == ()
-
-
-def test_an_option_value_is_not_mistaken_for_a_positional():
-    split = split_argv(["--config", "my.yaml", "path/to.ckpt"])
-    assert split.options == {"--config": "my.yaml"}
-    assert split.positionals == ("path/to.ckpt",)
-
-
-def test_an_inline_option_value_works_too():
-    assert split_argv(["--config=my.yaml"]).options == {"--config": "my.yaml"}
-
-
-def test_a_repeatable_option_accumulates():
-    split = split_argv(["--config-dir", "a", "--config-dir", "b"])
-    assert split.options == {"--config-dir": ["a", "b"]}
-
-
-def test_a_non_repeatable_option_given_twice_is_refused():
-    with pytest.raises(RefusalError, match="given more than once"):
-        split_argv(["--config", "a", "--config", "b"])
-
-
-def test_a_flag_given_a_value_is_refused():
-    with pytest.raises(RefusalError, match="takes no value"):
-        split_argv(["--clobber=yes"])
-
-
-def test_a_value_option_without_a_value_is_refused():
-    with pytest.raises(RefusalError, match="requires a value"):
-        split_argv(["--config"])
-
-
-def test_an_unknown_option_fails_rather_than_passing_through():
-    with pytest.raises(RefusalError, match="unknown option '--nope'"):
-        split_argv(["--nope"])
-
-
-def test_a_project_option_is_recognized_once_declared():
-    split = split_argv(
-        ["--device", "cuda:0"], options=[OptionSpec("--device", takes_value=True)]
-    )
-    assert split.options == {"--device": "cuda:0"}
-
-
-# --------------------------------------------------------------------------- #
-# configuration sources
-# --------------------------------------------------------------------------- #
-
-ALL = ("default", "file", "resolved", "continue")
-
-
-def test_no_source_option_falls_back_to_the_default_root():
-    assert selected_source({}, accepted=ALL) == ("default", None)
-
-
-def test_two_sources_are_mutually_exclusive():
-    with pytest.raises(RefusalError, match="mutually exclusive"):
-        selected_source(
-            {"--config": "a.yaml", "--resolved": "runs/x"}, accepted=ALL
-        )
-
-
-def test_an_augmenting_command_cannot_compose_a_fresh_root():
-    with pytest.raises(RefusalError, match="cannot compose a fresh configuration"):
-        selected_source({}, accepted=("resolved", "continue"))
-
-
-def test_a_source_the_command_rejects_names_what_it_accepts():
-    with pytest.raises(RefusalError, match="use --resolved, --continue-from"):
-        selected_source({"--config": "a.yaml"}, accepted=("resolved", "continue"))
-
-
-def test_a_command_taking_no_configuration_composes_nothing():
-    assert selected_source({}, accepted=()) == (None, None)
-
-
-def test_a_command_taking_no_configuration_refuses_a_source_option():
-    with pytest.raises(RefusalError, match="takes no configuration"):
-        selected_source({"--config": "a.yaml"}, accepted=())
-
-
-# --------------------------------------------------------------------------- #
-# positionals, end to end through a command
-# --------------------------------------------------------------------------- #
-
-INSPECT_CHECKPOINT = CommandSpec(
-    name=("inspect", "checkpoint"),
-    target=None,
-    config_sources=(),
-    positionals=(Positional("checkpoint"),),
-)
-
-EVAL = CommandSpec(
-    name=("eval",),
-    mode="augment",
-    target=TargetSpec("eval_outputs.dir_template", "eval_outputs.dir", "output_root"),
-    config_sources=("resolved", "continue"),
-)
-
-
-def test_a_positional_reaches_the_command_by_name():
-    parsed = parse_invocation(INSPECT_CHECKPOINT, ["runs/a/last.ckpt"])
-    assert parsed.positionals == {"checkpoint": "runs/a/last.ckpt"}
-    assert parsed.source is None
-
-
-def test_a_missing_required_positional_is_refused():
-    with pytest.raises(RefusalError, match="takes positionals: checkpoint"):
-        parse_invocation(INSPECT_CHECKPOINT, [])
-
-
-def test_an_extra_positional_is_refused():
-    with pytest.raises(RefusalError, match="takes positionals"):
-        parse_invocation(INSPECT_CHECKPOINT, ["a.ckpt", "b.ckpt"])
-
-
-def test_eval_takes_a_resolved_run_and_overrides_on_top():
-    parsed = parse_invocation(EVAL, ["--resolved", "runs/exp/a", "prediction.iou=0.5"])
-    assert parsed.source == "resolved"
-    assert parsed.source_value == "runs/exp/a"
-    assert parsed.overrides == ("prediction.iou=0.5",)
-
-
-def test_the_recorded_argv_text_round_trips_the_invocation():
-    parsed = parse_invocation(EVAL, ["--resolved", "runs/exp/a", "prediction.iou=0.5"])
-    assert parsed.argv_text == "eval --resolved runs/exp/a prediction.iou=0.5"
 
 
 # --------------------------------------------------------------------------- #
@@ -218,17 +67,6 @@ def test_a_target_with_no_configuration_source_is_refused():
         CommandRegistry([spec])
 
 
-def test_a_required_positional_after_an_optional_one_is_refused():
-    spec = CommandSpec(
-        name=("x",),
-        target=None,
-        config_sources=(),
-        positionals=(Positional("a", required=False), Positional("b")),
-    )
-    with pytest.raises(DeclarationError, match="follows an optional one"):
-        CommandRegistry([spec])
-
-
 # --------------------------------------------------------------------------- #
 # search path precedence
 # --------------------------------------------------------------------------- #
@@ -252,6 +90,12 @@ def test_a_missing_explicit_directory_is_refused(tmp_path):
 
 def test_a_missing_local_directory_falls_through_to_packaged(tmp_path):
     search = build_search_path(ComposeSpec(packaged="honbu"), cwd=tmp_path)
+    assert [path.name for path in search] == ["honbu"]
+
+
+def test_packaged_only_compose_spec_ignores_local_configs(tmp_path):
+    (tmp_path / "configs").mkdir()
+    search = build_search_path(ComposeSpec(packaged="honbu", local=None), cwd=tmp_path)
     assert [path.name for path in search] == ["honbu"]
 
 
@@ -327,9 +171,6 @@ def test_an_overlay_supplies_groups_the_primary_directory_lacks(tmp_path):
 
 
 def test_the_primary_directory_outranks_an_overlay_for_the_same_group(tmp_path):
-    """Hydra's semantics, verified rather than assumed: hydra.searchpath entries lose
-    to the directory holding the primary config. An overlay meaning to win outright
-    ships its own config.yaml, which makes it the primary."""
     _write_tree(tmp_path)
     (tmp_path / "shared" / "data").mkdir(parents=True)
     (tmp_path / "shared" / "data" / "local.yaml").write_text("uri: /shared/place\n")
@@ -360,16 +201,100 @@ def test_a_missing_primary_config_is_refused(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# typed load_config and parent_record (7.3)
+# --------------------------------------------------------------------------- #
+
+
+def test_load_config_all_four_sources_and_fork_lineage(tmp_path):
+    class Data(StrictModel):
+        uri: PortablePath
+
+    class Outputs(OutputBlock):
+        dir_template: str | None = "{experiment.name}/{runtime.config_id}"
+
+    class Root(StrictModel):
+        experiment: ExperimentConfig
+        runtime: HashedRuntimeConfig = Field(default_factory=HashedRuntimeConfig)
+        data: Data
+        epochs: int = 10
+        output_root: PortablePath = Path("./runs")
+        outputs: Outputs = Field(default_factory=Outputs)
+
+    _write_tree(tmp_path)
+    hashes = HashRegistry([FieldHash("config_hash", include=["experiment", "data", "epochs"])])
+    project = ProjectSpec(
+        root_type=Root,
+        compose_spec=ComposeSpec(packaged=None, local="configs"),
+        hashes=hashes,
+    )
+    cmd = CommandSpec(
+        name=("train",),
+        target=TargetSpec("outputs.dir_template", "outputs.dir", "output_root"),
+        hashes=("config_hash",),
+        fork_artifact="last_ckpt",
+    )
+
+    # default
+    loaded_default = load_config("default", project=project, command=cmd, cwd=tmp_path)
+    assert loaded_default.composed["epochs"] == 10
+    assert loaded_default.replay is False
+
+    res = resolve(loaded_default.composed, command=cmd, project=project, cwd=tmp_path)
+    with open_run(res, composed=loaded_default.composed, project=project, argv_text="train") as run:
+        run.record_artifact("last_ckpt", "checkpoints/last.pt")
+        run.record_artifact("best_ckpt", "checkpoints/best.pt")
+        parent_dir = run.run_dir
+
+    # file
+    custom = tmp_path / "custom.yaml"
+    custom.write_text("experiment:\n  name: custom\ndata:\n  uri: ./d\nepochs: 5\n")
+    loaded_file = load_config("file", custom, overrides=["epochs=7"], project=project, command=cmd)
+    assert loaded_file.composed["epochs"] == 7
+
+    # resolved
+    loaded_res = load_config("resolved", parent_dir, project=project, command=cmd)
+    assert loaded_res.replay is True
+    assert loaded_res.prior_run == parent_dir
+
+    # fork strips resolved-only fields and reads parent composed.yaml
+    loaded_fork = load_config("fork", parent_dir, overrides=["epochs=20"], project=project, command=cmd)
+    assert loaded_fork.replay is False
+    assert loaded_fork.prior_run == parent_dir
+    assert loaded_fork.composed["epochs"] == 20
+    assert "config_hash" not in loaded_fork.composed.get("runtime", {})
+
+    # parent_record supports default + caller-selected artifact + refuses missing/unknown
+    p_default = parent_record(parent_dir, command=cmd, project=project)
+    assert p_default["artifact_key"] == "last_ckpt"
+    assert p_default["artifact"] == "checkpoints/last.pt"
+    p_best = parent_record(parent_dir, artifact="best_ckpt", command=cmd, project=project)
+    assert p_best["artifact_key"] == "best_ckpt"
+    assert p_best["artifact"] == "checkpoints/best.pt"
+
+    with pytest.raises(RefusalError, match="registered no 'nope' artifact"):
+        parent_record(parent_dir, artifact="nope", project=project)
+    with pytest.raises(RefusalError, match="requires a parent artifact key"):
+        parent_record(parent_dir, project=project)
+
+    # Fork creates a new run with recorded parent lineage including artifact_key
+    child_res = resolve(loaded_fork.composed, command=cmd, project=project, cwd=tmp_path)
+    with open_run(
+        child_res,
+        composed=loaded_fork.composed,
+        project=project,
+        parent=p_best,
+    ) as child:
+        assert child.run_dir != parent_dir
+    lineage = Manifest.load(child.run_dir).data["parent"]
+    assert lineage == p_best
+
+
+# --------------------------------------------------------------------------- #
 # a bare top-level comma is a sweep, and Honbu does not run compositor multirun
 # --------------------------------------------------------------------------- #
 
 
 def test_a_bare_top_level_comma_is_refused_pointing_at_the_sweep_block():
-    """One character from a list value and the opposite meaning.
-
-    Left to the compositor this escaped as an uncaught exception whose advice was
-    to add --multirun, which is exactly what Honbu does not run.
-    """
     with pytest.raises(RefusalError, match="multi-value sweep") as caught:
         check_overrides(["epochs=10,20"])
     assert "sweep.axes.epochs=[...]" in str(caught.value)
@@ -389,14 +314,6 @@ def test_a_malformed_override_is_a_refusal_not_a_traceback():
 
 
 def test_setting_a_template_from_the_command_line_is_told_how_to_quote_it():
-    """Braces open a template in one grammar and a dict in the other.
-
-    It is the only systematic collision between the two grammars a caller types into
-    at once, and it makes every templated field unsettable from the command line
-    until the value is quoted so that the quotes survive the shell too. The
-    compositor says "mismatched input '{'", which describes the parse rather than
-    the remedy.
-    """
     with pytest.raises(RefusalError) as caught:
         check_overrides(["outputs.dir_template=./runs/{experiment.name}"])
 
@@ -406,7 +323,6 @@ def test_setting_a_template_from_the_command_line_is_told_how_to_quote_it():
 
 
 def test_an_unremarkable_parse_error_gains_no_advice():
-    """The hint is offered where it applies, not appended to everything."""
     with pytest.raises(RefusalError) as caught:
         check_overrides(["bad==="])
 
@@ -414,7 +330,6 @@ def test_an_unremarkable_parse_error_gains_no_advice():
 
 
 def test_a_composition_error_is_a_refusal_not_a_traceback(tmp_path):
-    """A user's configuration mistake exits like a message, not like a defect."""
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "config.yaml").write_text("a: 1\n")
     with pytest.raises(RefusalError, match="composition failed"):
@@ -431,7 +346,6 @@ def test_a_composition_error_is_a_refusal_not_a_traceback(tmp_path):
 
 
 def sweeping(tmp_path):
-    """A configuration carrying an empty sweep block, as a project would ship it."""
     (tmp_path / "configs").mkdir()
     (tmp_path / "configs" / "config.yaml").write_text(
         "epochs: 3\nsweep:\n  gate: null\n  axes: {}\n  covariant_axes: {}\n"
@@ -451,18 +365,11 @@ def test_overrides_outside_the_sweep_block_are_untouched():
 
 
 def test_an_explicitly_prefixed_sweep_override_is_left_alone():
-    """Someone deleting an axis with ``~`` means it."""
     tokens = ["~sweep.axes.epochs", "+sweep.axes.lr=[0.1]", "++sweep.gate=x"]
     assert force_add_sweep_overrides(tokens) == tokens
 
 
 def test_a_new_axis_composes_without_the_caller_supplying_a_prefix(tmp_path):
-    """The claim the open-mapping requirement rests on.
-
-    Struct mode would otherwise refuse an axis key for the sole reason that no
-    previous sweep used it, making the prefix depend on the authored file rather
-    than on what the caller meant.
-    """
     spec = sweeping(tmp_path)
     composed = compose_config(
         spec, overrides=["sweep.axes.epochs=[10,20]"], cwd=tmp_path
@@ -471,7 +378,6 @@ def test_a_new_axis_composes_without_the_caller_supplying_a_prefix(tmp_path):
 
 
 def test_a_nested_axis_key_composes_and_arrives_nested(tmp_path):
-    """Which is why normalization exists: the compositor reads every dot as a level."""
     composed = compose_config(
         sweeping(tmp_path), overrides=["sweep.axes.model.backbone=[a,b]"], cwd=tmp_path
     )
@@ -479,8 +385,6 @@ def test_a_nested_axis_key_composes_and_arrives_nested(tmp_path):
 
 
 def test_redeclaring_an_axis_replaces_rather_than_failing_as_a_duplicate(tmp_path):
-    """``++`` rather than ``+``: an axis the base configuration already sets is
-    overridden like any other value."""
     composed = compose_config(
         sweeping(tmp_path),
         overrides=["sweep.axes.epochs=[10,20]", "sweep.axes.epochs=[30]"],
@@ -502,7 +406,6 @@ def test_a_covariant_axis_composes_from_the_command_line(tmp_path):
 
 
 def test_a_comma_axis_inside_the_block_is_still_refused(tmp_path):
-    """The rewrite does not smuggle multirun grammar in through the block."""
     with pytest.raises(RefusalError, match="multi-value sweep"):
         compose_config(
             sweeping(tmp_path), overrides=["sweep.axes.epochs=10,20"], cwd=tmp_path

@@ -16,7 +16,6 @@ from honbu import (
     OutputBlock,
     PortablePath,
     RefusalError,
-    ResolvedPath,
     ResolvedString,
     RuntimeConfig,
     StrictModel,
@@ -47,7 +46,6 @@ class Runtime(RuntimeConfig):
 
 
 class Outputs(OutputBlock):
-    dir: ResolvedPath = None
     dir_template: str | None = "{experiment.name:slug}/{runtime.config_id}"
 
 
@@ -239,7 +237,7 @@ def test_the_refusal_suggests_both_remedies():
         check_gate_distinguishes("g", ["same", "same"], coords)
     message = str(caught.value)
     assert "widen what the gate reads" in message
-    assert "child index or a realized axis value" in message
+    assert "choose a gate path that varies" in message
 
 
 def test_unhashable_gate_values_still_group():
@@ -346,3 +344,17 @@ def test_a_sweep_without_a_gate_is_refused_with_what_a_gate_is_for():
 
 def test_a_declared_gate_is_returned():
     assert require_gate(SweepBlock(gate="runtime.config_id")) == "runtime.config_id"
+
+
+def test_unstable_child_target_directory_is_refused_even_when_gate_is_stable():
+    class UnstableOutputs(OutputBlock):
+        dir_template: str | None = "{runtime.config_id}_{runtime.run_id}"
+
+    class UnstableRoot(Root):
+        outputs: UnstableOutputs = Field(default_factory=UnstableOutputs)
+
+    with pytest.raises(RefusalError, match="child output target is not stable"):
+        check_gate_is_stable(
+            "runtime.config_id",
+            resolve_with=resolver(root_type=UnstableRoot),
+        )

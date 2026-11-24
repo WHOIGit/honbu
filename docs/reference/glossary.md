@@ -26,15 +26,16 @@ things, that is recorded rather than resolved by fiat.
 
 **Config source**
 :   One of four mutually exclusive origins: the default config, an authored file, a
-    prior run's resolved configuration, or a parent run to continue from.
+    prior run's resolved configuration, or a parent run to fork from.
 
 **Replay**
 :   Reusing a prior run's *resolved* configuration, which carries a literal output
     directory and therefore lands in that same run.
 
-**Continue**
-:   Reusing a prior run's *composed* configuration, producing a new run with recorded
-    lineage. Survives being moved to another machine; a replay does not.
+**Fork**
+:   Reusing a prior run's *composed* configuration (`--fork-from`), producing a new
+    run with recorded parent lineage (`manifest.parent`). Survives being moved to
+    another machine; a replay does not.
 
 ## Identity
 

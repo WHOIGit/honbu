@@ -1,23 +1,17 @@
-"""Composition: argv and configuration directories in, a plain dict out.
+"""Composition: configuration directories and overrides in, a plain dict out.
 
-This is the half of L2 that knows about files. It ends at a dict; everything
-downstream — validation, identities, templates, paths — is the resolver's, which
-never sees argv and never reads a configuration file. That boundary is what makes
-the resolver usable on a dict you built in a notebook.
+This is the half of :mod:`honbu.flow` that knows about files. It ends at a plain
+dict; everything downstream — validation, identities, templates, paths — belongs
+to the resolver, which never reads a configuration file. CLI token routing lives
+in opt-in :mod:`honbu.cli`, never here (D19).
 
 Hydra is a core dependency (D20), so it is imported at module scope like anything
-else. It used to be imported lazily inside :func:`compose_config` to keep this
-module importable without the ``flow`` extra; that extra is gone, and with it the
-branch whose only job was to tell someone mid-command to go install something.
-
-Honbu makes the Hydra call because ``config_loader/compositor.py`` is one of the
-modules that drifted in both projects, and the drift-prone part is precisely the
-part duplicated here: assembling ``hydra.searchpath`` with a defined precedence.
-Owning the call prescribes much less than it looks like. A Compose call needs a
-search path, a config name and overrides; group names, directory layout and
-defaults lists all stay in the project's own YAML. :func:`build_search_path` is
-exported so a project needing multirun or structured configs drives Hydra itself
-rather than fighting a wrapper.
+else. Honbu makes the Hydra call because ``config_loader/compositor.py`` is one of
+the modules that drifted in both sibling projects, and the drift-prone part is
+precisely the part centralized here: assembling ``hydra.searchpath`` with a
+defined precedence. :func:`build_search_path` is exported so a project needing
+structured configs or custom Hydra features drives Hydra itself rather than
+fighting a wrapper.
 
 There is deliberately no named-experiment root source. ``experiment=reef-v3`` is
 not special to Hydra — it works because experiment files carry a
@@ -28,8 +22,8 @@ model is a default root plus overrides.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -41,66 +35,23 @@ from honbu.errors import RefusalError
 
 #: Where a configuration comes from. Mutually exclusive; overrides ride on top of
 #: any of them. ``default`` is the project's config name under the search path.
-ConfigSource = Literal["default", "file", "resolved", "continue"]
+ConfigSource = Literal["default", "file", "resolved", "fork"]
 
-ALL_CONFIG_SOURCES: tuple[ConfigSource, ...] = ("default", "file", "resolved", "continue")
-
-
-@dataclass(frozen=True)
-class OptionSpec:
-    """A dash-prefixed token the split must recognize.
-
-    Arity has to be declared because the split runs before the CLI framework sees
-    argv: given ``--config x.yaml``, only the option's arity says whether
-    ``x.yaml`` is its value or a positional. Every legal dash token is either a
-    framework option or declared by the command, so arity is always known and the
-    ambiguity never arises.
-    """
-
-    name: str
-    takes_value: bool = False
-    repeatable: bool = False
-
-
-#: Options Honbu itself consumes. Every one of them acts *before or around* project
-#: code — which configuration is used, where it is looked for, and whether Honbu may
-#: write where it intends. None of them decides how much of a command's work runs;
-#: that is the project's, expressed by declaring a command (D25).
-#:
-#: Two absences by decision. ``--force`` never fired under a timestamped run
-#: template and fired on every deliberate re-run under a deterministic one, so a
-#: described occupant replaced it. ``--init`` meant "persist the bundle and stop",
-#: which is the one thing here that decided how much work happened; with a partial
-#: run state a project declares its own command for that and names it itself.
-FRAMEWORK_OPTIONS: tuple[OptionSpec, ...] = (
-    OptionSpec("--config", takes_value=True),
-    OptionSpec("--resolved", takes_value=True),
-    OptionSpec("--continue-from", takes_value=True),
-    OptionSpec("--config-dir", takes_value=True, repeatable=True),
-    OptionSpec("--clobber"),
-    OptionSpec("--resume"),
-)
-
-#: Which framework option supplies which configuration source.
-SOURCE_OPTIONS: Mapping[ConfigSource, str] = {
-    "file": "--config",
-    "resolved": "--resolved",
-    "continue": "--continue-from",
-}
+ALL_CONFIG_SOURCES: tuple[ConfigSource, ...] = ("default", "file", "resolved", "fork")
 
 
 @dataclass(frozen=True)
 class ComposeSpec:
     """Where a project's configuration lives.
 
-    ``packaged`` is an importable package holding committed defaults; ``local`` a
-    directory relative to the working directory that shadows them. Precedence runs
-    explicit → local → packaged, so a checkout can override a shipped default
-    without editing it.
+    ``packaged`` is an importable package holding committed defaults; ``local`` is
+    a directory relative to the working directory that shadows them (or ``None``
+    for packaged-only composition). Precedence runs explicit → local → packaged,
+    so a checkout can override a shipped default without editing it.
     """
 
     packaged: str | None = None
-    local: str = "configs"
+    local: str | None = "configs"
     config_name: str = "config"
 
 
@@ -110,142 +61,6 @@ class Composition:
 
     config: dict[str, Any]
     choices: Mapping[str, str]
-
-
-@dataclass(frozen=True)
-class ArgvSplit:
-    overrides: tuple[str, ...] = ()
-    options: Mapping[str, Any] = field(default_factory=dict)
-    positionals: tuple[str, ...] = ()
-
-
-def split_argv(
-    tokens: Sequence[str],
-    *,
-    options: Iterable[OptionSpec] = (),
-    framework: Iterable[OptionSpec] = FRAMEWORK_OPTIONS,
-    reason: Mapping[str, str] | None = None,
-) -> ArgvSplit:
-    """Route argv into overrides, options and positionals.
-
-    A dash-free token is an override if it contains ``=`` or begins with ``~``,
-    which covers the compositor's whole grammar: ``+`` and ``++`` are dash-free and
-    carry a value, and ``~`` deletes either with a value or without one.
-
-    ``framework`` is the subset of framework options this caller accepts; ``reason``
-    explains, per excluded option, why it does not apply, so a refusal says more than
-    "unknown option" for a token that is real but out of place.
-    """
-    known = {spec.name: spec for spec in (*framework, *options)}
-    excluded = dict(reason or {})
-
-    overrides: list[str] = []
-    positionals: list[str] = []
-    collected: dict[str, Any] = {}
-
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        index += 1
-
-        if token.startswith("-"):
-            name, separator, inline = token.partition("=")
-            spec = known.get(name)
-            if spec is None:
-                if name in excluded:
-                    raise RefusalError(
-                        f"{name} does not apply here: {excluded[name]}"
-                    )
-                raise RefusalError(
-                    f"unknown option {name!r}; known options: "
-                    f"{', '.join(sorted(known))}"
-                )
-            if not spec.takes_value:
-                if separator:
-                    raise RefusalError(f"{name} is a flag and takes no value")
-                collected[spec.name] = True
-                continue
-            if separator:
-                value = inline
-            elif index < len(tokens):
-                value = tokens[index]
-                index += 1
-            else:
-                raise RefusalError(f"{name} requires a value")
-            if spec.repeatable:
-                collected.setdefault(spec.name, []).append(value)
-            elif spec.name in collected:
-                raise RefusalError(f"{name} given more than once")
-            else:
-                collected[spec.name] = value
-            continue
-
-        # A deletion carries no value, so it is the one override form the
-        # contains-an-equals rule cannot see. Without this it lands in positionals
-        # and is reported as an arity error, which describes neither what was
-        # written nor what to do about it.
-        if "=" in token or token.startswith("~"):
-            overrides.append(token)
-        else:
-            positionals.append(token)
-
-    return ArgvSplit(
-        overrides=tuple(overrides),
-        options=collected,
-        positionals=tuple(positionals),
-    )
-
-
-def selected_source(
-    options: Mapping[str, Any],
-    *,
-    accepted: Sequence[ConfigSource],
-) -> tuple[ConfigSource | None, str | None]:
-    """The single configuration source in play, refusing conflicts.
-
-    Returns ``(None, None)`` for a command accepting no source, so a command that
-    only reads a checkpoint is not broken by a missing default root.
-    """
-    if not accepted:
-        offenders = [SOURCE_OPTIONS[s] for s in ALL_CONFIG_SOURCES[1:]]
-        supplied = [name for name in offenders if name in options]
-        if supplied:
-            raise RefusalError(
-                f"this command takes no configuration; remove {', '.join(supplied)}"
-            )
-        return None, None
-
-    supplied = [
-        (source, options[name])
-        for source, name in SOURCE_OPTIONS.items()
-        if name in options
-    ]
-    if len(supplied) > 1:
-        names = ", ".join(SOURCE_OPTIONS[source] for source, _ in supplied)
-        raise RefusalError(f"configuration sources are mutually exclusive: {names}")
-
-    if not supplied:
-        if "default" not in accepted:
-            offered = ", ".join(
-                SOURCE_OPTIONS[source] for source in accepted if source in SOURCE_OPTIONS
-            )
-            raise RefusalError(
-                "this command cannot compose a fresh configuration; "
-                f"identify an existing one with {offered}"
-            )
-        return "default", None
-
-    source, value = supplied[0]
-    if source not in accepted:
-        offered = ", ".join(
-            SOURCE_OPTIONS[candidate]
-            for candidate in accepted
-            if candidate in SOURCE_OPTIONS
-        ) or "no source option"
-        raise RefusalError(
-            f"{SOURCE_OPTIONS[source]} is not accepted by this command; use {offered}"
-        )
-    return source, str(value)
 
 
 def build_search_path(
@@ -270,38 +85,51 @@ def build_search_path(
             raise RefusalError(f"configuration directory does not exist: {candidate}")
         found.append(candidate.resolve())
 
-    local = base / spec.local
-    if local.is_dir():
-        found.append(local)
+    if spec.local is not None:
+        local = base / spec.local
+        if local.is_dir():
+            found.append(local.resolve())
 
     if spec.packaged is not None:
         found.append(_packaged_dir(spec.packaged))
 
     if not found:
+        if spec.local is not None:
+            raise RefusalError(
+                f"no configuration directory found: neither ./{spec.local} nor packaged "
+                "defaults are available"
+            )
         raise RefusalError(
-            f"no configuration directory found: neither ./{spec.local} nor packaged "
-            "defaults are available"
+            "no configuration directory found: no local directory configured and no "
+            "packaged defaults are available"
         )
     return tuple(found)
 
 
-def compose_file(path: Path | str, *, overrides: Sequence[str] = ()) -> dict[str, Any]:
+def compose_file(
+    path: Path | str,
+    *,
+    overrides: Sequence[str] = (),
+    extra_dirs: Sequence[Path | str] = (),
+) -> dict[str, Any]:
     """Compose an arbitrary configuration file, with overrides.
 
     Uses the file's own directory as the search path and its stem as the config
     name, so the compositor applies overrides to it exactly as it would to the
-    default root. That is what lets ``--config my.yaml epochs=50`` and
-    ``--resolved <run> epochs=50`` behave like every other invocation rather than
-    being a second, weaker override mechanism.
+    default root. That is what lets authored files and prior run bundles compose
+    with overrides identically to the default root rather than using a weaker
+    second override mechanism.
     """
-    # The config directory also becomes the composition working context. Resolve
-    # first so a relative provenance-bundle path is not joined to that context a
-    # second time (for example ``runs/x/config/resolved.yaml``).
     target = Path(path).resolve()
     if not target.is_file():
         raise RefusalError(f"configuration file does not exist: {target}")
     spec = ComposeSpec(packaged=None, local=str(target.parent), config_name=target.stem)
-    return compose_config(spec, overrides=overrides, cwd=target.parent.parent or Path("."))
+    return compose_config(
+        spec,
+        overrides=overrides,
+        extra_dirs=extra_dirs,
+        cwd=target.parent.parent or Path("."),
+    )
 
 
 def prior_config_path(
@@ -344,15 +172,15 @@ def resolved_config_path(reference: Path | str, *, index: int = 1) -> Path:
 
 
 def composed_config_path(reference: Path | str, *, index: int = 1) -> Path:
-    """A prior run's *authored* configuration — what a continuation builds on.
+    """A prior run's *authored* configuration — what a fork builds on.
 
-    Continuing reads this rather than the resolved form because resolved input
+    Forking reads this rather than the resolved form because resolved input
     paths are absolute: ``./datasets/coco8`` is stored as
     ``/home/you/datasets/coco8``, which does not exist on the cluster node you
-    wanted to continue in. The authored form re-absolutizes wherever it runs.
+    meant to fork on. The authored form re-absolutizes wherever it runs.
 
     The cost, accepted: this holds only what was authored, so schema defaults are
-    re-applied at continuation time and a default that moved since the parent ran
+    re-applied at fork time and a default that moved since the parent ran
     is silently picked up.
     """
     from honbu.flow.run import COMPOSED_NAME
@@ -548,7 +376,9 @@ def compose_with_choices(
 
     try:
         with initialize_config_dir(config_dir=str(primary), version_base=None):
-            composed = compose(config_name=spec.config_name, overrides=full, return_hydra_config=True)
+            composed = compose(
+                config_name=spec.config_name, overrides=full, return_hydra_config=True
+            )
     except HydraException as exc:
         # A composition error is a message to the user about their configuration,
         # not a defect in Honbu, so it exits like one rather than as a traceback.

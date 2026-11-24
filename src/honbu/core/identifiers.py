@@ -15,22 +15,25 @@ from __future__ import annotations
 import hashlib
 import random
 import secrets
+import threading
 
 import coolname
 
 _SLUG_WORDS = 2
+_COOLNAME_LOCK = threading.Lock()
 
 
 def _seeded_slug(domain: str, value: str) -> str:
     digest = hashlib.sha256(f"{domain}:{value}".encode()).hexdigest()
     rng = random.Random(int(digest[:16], 16))
-    generator = coolname.generate.__self__
-    previous = generator.random
-    try:
-        coolname.replace_random(rng)
-        return coolname.generate_slug(_SLUG_WORDS)
-    finally:
-        coolname.replace_random(previous)
+    with _COOLNAME_LOCK:
+        generator = coolname.generate.__self__
+        previous = generator.random
+        try:
+            coolname.replace_random(rng)
+            return coolname.generate_slug(_SLUG_WORDS)
+        finally:
+            coolname.replace_random(previous)
 
 
 def deterministic_id(domain: str, value: str) -> str:

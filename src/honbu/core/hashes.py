@@ -123,6 +123,7 @@ class SourceHash:
     build: Callable[[Mapping[str, Any]], Mapping[str, Any] | None]
     provenance: str | None = None
     reads_inputs: bool = False
+    versioned: bool = True
 
 
 @dataclass(frozen=True)
@@ -141,7 +142,8 @@ class FannedHash:
 
     ``build`` returns a mapping of key to source, or a sequence when the collection
     has no natural key, in which case entries are keyed by index. Each source
-    carries its own ``version``, exactly as :class:`SourceHash` requires.
+    carries its own ``version`` by default (``versioned=True``), exactly as
+    :class:`SourceHash` requires.
 
     The alternative was a per-head declaration written out by hand, which cannot
     work: the head names come from the configuration, so the set is not known until
@@ -155,6 +157,7 @@ class FannedHash:
     ]
     provenance: str | None = None
     reads_inputs: bool = False
+    versioned: bool = True
 
     def __post_init__(self) -> None:
         if "." in self.name:
@@ -211,6 +214,28 @@ def select_paths(dump: Mapping[str, Any], includes: Sequence[str]) -> dict[str, 
     return out
 
 
+def project_model(
+    model: BaseModel,
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Project a configuration model or submodel with marker-driven exclusions applied.
+
+    Intended for custom :class:`SourceHash` and :class:`FannedHash` builders so
+    they inherit Honbu's marker exclusions (portable paths, derived identities,
+    templates, directives — containers included) automatically rather than
+    maintaining hand-written exclusion lists.
+    """
+    dumped = model.model_dump(mode="json", exclude_none=True)
+    source = select_paths(dumped, include) if include is not None else dumped
+    for dotted in exclude:
+        prune_path(source, parse_dotted(dotted))
+    for path in excluded_source_paths(type(model)):
+        prune_path(source, path)
+    return source
+
+
 def project_fields(declaration: FieldHash, context: Mapping[str, Any]) -> dict[str, Any]:
     """Build a :class:`FieldHash` source from the resolved configuration."""
     config = context["config"]
@@ -225,11 +250,7 @@ def project_fields(declaration: FieldHash, context: Mapping[str, Any]) -> dict[s
             )
         include = include[command]
 
-    source = select_paths(config.model_dump(mode="json", exclude_none=True), include)
-    for dotted in declaration.exclude:
-        prune_path(source, parse_dotted(dotted))
-    for path in excluded_source_paths(type(config)):
-        prune_path(source, path)
+    source = project_model(config, include=include, exclude=declaration.exclude)
     if declaration.version is not None:
         source["version"] = declaration.version
     return source
@@ -343,35 +364,49 @@ class HashRegistry:
                         provenance=provenance,
                         source=None,
                     )
-                case SourceHash(name=name, build=build, provenance=provenance):
+                case SourceHash(
+                    name=name, build=build, provenance=provenance, versioned=versioned
+                ):
                     source = build(context)
                     if source is None:
                         deferred.append(name)
                         continue
-                    if "version" not in source:
+                    if versioned and "version" not in source:
                         raise DeclarationError(f"{name}: source must declare a version")
+                    version = (
+                        str(source["version"])
+                        if "version" in source and source["version"] is not None
+                        else None
+                    )
                     entries[name] = HashEntry(
                         name=name,
                         value=hash_source(source),
-                        version=str(source["version"]),
+                        version=version,
                         provenance=provenance,
                         source=source,
                     )
-                case FannedHash(name=name, build=build, provenance=provenance):
+                case FannedHash(
+                    name=name, build=build, provenance=provenance, versioned=versioned
+                ):
                     fanned = build(context)
                     if fanned is None:
                         deferred.append(name)
                         continue
                     for key, source in _fanned_items(name, fanned):
-                        if "version" not in source:
+                        if versioned and "version" not in source:
                             raise DeclarationError(
                                 f"{name}.{key}: source must declare a version"
                             )
+                        version = (
+                            str(source["version"])
+                            if "version" in source and source["version"] is not None
+                            else None
+                        )
                         entry = HashEntry(
                             name=name,
                             key=key,
                             value=hash_source(source),
-                            version=str(source["version"]),
+                            version=version,
                             provenance=provenance,
                             source=source,
                         )
@@ -393,13 +428,16 @@ def validate_identity_fields(
 ) -> tuple[tuple[tuple[str, ...], str], ...]:
     """Cross-check every ``FromHash`` field against the registry.
 
-    Two failures, both at construction. A field naming a hash nobody declares would
-    silently stay null and render as ``None`` inside a directory name. A field that
-    is not resolved-only would be an *authored* value assigned after its digest was
-    computed, so the recorded digest would describe a configuration that never ran.
+    Four failures, all at construction: an unknown hash name, a fanned hash (one
+    field cannot hold many digests), a deferred input-reading hash (deferred
+    digests are run-time facts read via ``run.hash()`` rather than persisted in
+    ``config/resolved.yaml``), or a field that is not resolved-only (assigning an
+    authored field after its digest was computed would make the digest describe a
+    configuration that never ran).
     """
     bindings = identity_bindings(root_type)
     known = set(registry.names)
+    deferred = set(registry.deferred_names)
     for path, hash_name in bindings:
         dotted_path = ".".join(path)
         if hash_name not in known:
@@ -413,6 +451,13 @@ def validate_identity_fields(
                 f"{root_type.__name__}.{dotted_path} receives {hash_name!r}, which "
                 "fans out to one entry per key; a single field cannot hold many "
                 "digests"
+            )
+        if hash_name in deferred:
+            raise DeclarationError(
+                f"{root_type.__name__}.{dotted_path} declares FromHash({hash_name!r}), "
+                "which reads inputs and is deferred past resolution; deferred hashes "
+                f"cannot populate resolved configuration fields — read them via "
+                f"run.hash({hash_name!r}) instead"
             )
         if not is_resolved_only(root_type, path):
             raise DeclarationError(

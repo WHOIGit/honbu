@@ -135,6 +135,7 @@ def prepare_target(
     *,
     containment_root: Path,
     clobber: bool = False,
+    cli_hint: str | None = None,
 ) -> tuple[Path, tuple[str, ...]]:
     """Validate, clear if permitted, and create a *producing* command's target."""
     resolved = validate_destructive_target(target, containment_root=containment_root)
@@ -150,7 +151,11 @@ def prepare_target(
             raise _occupant_refusal(
                 resolved,
                 entries,
-                offer="--clobber to replace it, --resume to continue it",
+                offer=(
+                    cli_hint
+                    if cli_hint is not None
+                    else "pass clobber=True to replace it, or resume=True to continue it"
+                ),
             )
         if entries:
             clear_contents(resolved)
@@ -165,6 +170,7 @@ def prepare_scope(
     *,
     containment_root: Path,
     clobber: bool = False,
+    cli_hint: str | None = None,
 ) -> tuple[str, ...]:
     """Validate and clear an *augmenting* command's declared leaves.
 
@@ -187,11 +193,21 @@ def prepare_scope(
         collision = case_collision(resolved)
         if collision:
             warnings.append(collision)
-        if resolved.is_dir():
+        if resolved.is_file():
+            if not clobber:
+                raise RefusalError(f"output leaf exists as a file: {resolved}")
+            resolved.unlink()
+        elif resolved.is_dir():
             entries = sorted(entry.name for entry in resolved.iterdir())
             if entries and not clobber:
                 raise _occupant_refusal(
-                    resolved, entries, offer="--clobber to replace this leaf"
+                    resolved,
+                    entries,
+                    offer=(
+                        cli_hint
+                        if cli_hint is not None
+                        else "pass clobber=True to replace this leaf"
+                    ),
                 )
             if entries:
                 clear_contents(resolved)

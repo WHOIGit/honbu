@@ -22,7 +22,7 @@ the reader.
 | `TEMPLATED` | yes | a rendered label for the configuration, not an input |
 | `DIRECTIVE` | yes | an instruction to the framework, authored by hand |
 | `RESOLVED_ONLY` | no | may not be authored, but is part of the configuration |
-| `IDENTITY` | no | marks a name minted from a digest |
+| `IDENTITY` | no | records this field's value in the run manifest's identities (orthogonal to origin — e.g. `run_id`, `config_id`, `sweep_id`) |
 | `FromHash(name)` | — | binds the field to a declared hash |
 
 The four exclusions differ in *why*. Three are about provenance — Honbu generated it,

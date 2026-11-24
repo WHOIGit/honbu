@@ -67,15 +67,34 @@ class StrictModel(BaseModel):
     )
 
 
-def backend_kwargs(block: BaseModel) -> dict[str, Any]:
+def _omit_deferred(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _omit_deferred(v) for k, v in value.items() if v != DEFER}
+    if isinstance(value, list):
+        return [_omit_deferred(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_omit_deferred(v) for v in value)
+    return value
+
+
+def backend_kwargs(
+    block: BaseModel,
+    *,
+    mode: Literal["python", "json"] = "python",
+    recursive: bool = False,
+) -> dict[str, Any]:
     """Forwardable knobs from ``block``, with deferred ones omitted.
 
     One framework helper instead of a hand-rolled filter per block, so "what does
     DEFER mean at the call site" has exactly one answer. Filters by value rather
     than by ``model_fields_set``, per decision 1.
+
+    Defaults to ``mode="python"`` so native Python types such as ``tuple`` and
+    ``Path`` survive intact when forwarded directly to Python backend libraries;
+    pass ``mode="json"`` for a JSON-native mapping, and ``recursive=True`` to
+    also omit ``DEFER`` inside nested mappings.
     """
-    return {
-        name: value
-        for name, value in block.model_dump(mode="json").items()
-        if value != DEFER
-    }
+    dumped = block.model_dump(mode=mode)
+    if recursive:
+        return _omit_deferred(dumped)
+    return {name: value for name, value in dumped.items() if value != DEFER}

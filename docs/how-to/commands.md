@@ -1,16 +1,17 @@
 # Register commands
 
-A command is a declaration. From it Honbu derives the argv split, the help text, the
-resolution order, the collision check, and the blast radius of `--clobber` — so
-there is exactly one place to change when the command changes.
+A `CommandSpec` declares what a command does to a run: its mode, target, hashes,
+steps, accepted configuration sources, and write scope. From that declaration Honbu
+drives configuration loading, resolution order, collision checks, and the blast
+radius of `--clobber` — without owning your CLI parser.
 
-## Declare and register
+## Declare commands and project
 
 ```python
 --8<-- "examples/linefit/project.py:commands"
 ```
 
-Registration is a decorator. The handler receives a live `Run`:
+Your CLI callback loads the configuration, resolves it, and opens a live `Run`:
 
 ```python
 --8<-- "examples/linefit/project.py:handler"
@@ -24,28 +25,27 @@ Registration is a decorator. The handler receives a live `Run`:
 
 | Field | Meaning |
 | --- | --- |
-| `name` | the command path — `("eval", "test")` registers `eval test` |
-| `mode` | `"create"` (default) or `"augment"` |
+| `name` | the command path — `("eval", "test")` names `eval test` |
+| `mode` | `"produce"` (default) or `"augment"` |
 | `target` | which fields hold the output template, the resolved directory, and the root |
 | `hashes` | which declared digests this command computes |
 | `steps` | the units of "do not do this again" |
+| `completion_steps` | which steps satisfy completion (defaults to all `steps`) |
 | `scope` | for an augmenting command, the output leaves it may replace |
-| `config_sources` | which of `default`, `file`, `resolved`, `continue` it accepts |
-| `positionals` | required and optional positional arguments |
+| `config_sources` | which of `default`, `file`, `resolved`, `fork` it accepts |
 | `advances_run` | whether finishing moves the run's state |
-| `continue_artifact` | which artifact `--continue-from` reads |
+| `fork_artifact` | optional default artifact key recorded when forking (`--fork-from`) |
 
-Nested names work as you would expect: register `eval validation` and `eval test`
-and each gets its own scope, so `--clobber` on the test report cannot erase the
-validation results. Honbu matches the longest registered path first.
+Give nested subcommands distinct scopes — for example `eval validation` and
+`eval test` — so `--clobber` on the test report cannot erase validation results.
 
 ## Producing versus augmenting
 
-A **producing** command creates a run: it resolves a fresh target, checks it is
-safe, writes the provenance bundle, and advances the state.
+A **producing** command (`mode="produce"`) creates a run: it resolves a fresh target,
+checks it is safe, writes the provenance bundle, and advances the run state.
 
-An **augmenting** command names a run that exists, via `--resolved`, and adds to it.
-Declare `mode="augment"`, point `target` at the same target spec, and give it the
+An **augmenting** command (`mode="augment"`) names a run that already exists, via
+`--resolved`, and adds to it. Point `target` at the same `TargetSpec` and declare the
 narrow `scope` it is allowed to replace:
 
 ```python
@@ -59,17 +59,18 @@ absolute.
 
 Exactly one source is in play per invocation, declared per command:
 
-| Source | Flag | Gives you |
+| Source | Conventional flag | Gives you |
 | --- | --- | --- |
 | `default` | *(none)* | composed from the search path |
 | `file` | `--config x.yaml` | that file, composed with its own directory as the search path |
 | `resolved` | `--resolved <run>` | a prior run's resolved configuration — a replay, landing in that same run |
-| `continue` | `--continue-from <run>` | a prior run's *authored* configuration, as a new run with recorded lineage |
+| `fork` | `--fork-from <run>` | a prior run's *authored* configuration, as a new run with recorded lineage |
 
-`--resolved` and `--continue-from` differ in which view they read, and the
-difference matters: a replay keeps the absolute paths and the literal output
-directory, so it re-enters the same run; a continuation builds on the portable form,
-so it survives being moved to another machine.
+`--resolved` and `--fork-from` differ in which view they read, and the difference
+matters: a replay keeps absolute paths and the literal output directory, so it
+re-enters the same run; a fork builds on the portable `config/composed.yaml`, so it
+survives being moved to another machine and records `parent` lineage (including the
+optional `artifact_key` selected via `--fork-artifact` or `CommandSpec.fork_artifact`).
 
 ## Steps and resume
 
@@ -80,45 +81,47 @@ if not run.skip("fit"):
 ```
 
 Declare a step where repeating the work would be expensive or destructive. A step
-that completed is skipped on `--resume`; the one that was interrupted runs again.
-Declaring a step per epoch is usually wrong — the boundary is a promise the work
-either happened or did not, and fine-grained promises are harder to keep than the
-repetition costs.
+that completed (or was marked `not_applicable`) is skipped on `--resume`; the one
+that was interrupted runs again. Declaring a step per epoch is usually wrong — the
+boundary is a promise the work either happened or did not, and fine-grained promises
+are harder to keep than the repetition costs.
 
 `StepSpec` takes `on_resume="restart"` for a step that must always re-run (a cheap
 setup step, say) and a `scope` for one that owns particular output leaves.
 
-## Keeping your own parser
+On `--resume`, Honbu preserves the recorded `run_id` when not explicitly overridden
+and refuses behavioral `config_hash` drift by default (`allow_config_drift=False`),
+directing you to `--fork-from` or `--clobber`.
 
-Honbu's dispatcher is optional. `dispatch_command` threads one command from its
-remaining argv tokens to a finished run and knows about no CLI library:
+## Keeping your own CLI parser
+
+`honbu.flow` is completely CLI-free — `load_config`, `resolve`, `parent_record`, and
+`open_run` take plain Python arguments and know about no CLI library.
+
+- Using **Typer**? Import `HYDRA_CONTEXT_SETTINGS`, ready-made option aliases
+  (`ConfigOpt`, `ResolvedOpt`, `ForkFromOpt`, `ForkArtifactOpt`, `ConfigDirsOpt`,
+  `ClobberOpt`, `ResumeOpt`), or customizable option factories from
+  `honbu.cli.presets`.
+- Using **Click, `argparse`, or your own parser**? Import the library-agnostic
+  helpers from `honbu.cli`: `split_dash_rule`, `validate_override_tokens`,
+  `select_config_source`, `exit_on_refusal`, and `emit_warnings`.
+
+Wrap your command entrypoint in `with exit_on_refusal(prog="yourproject"):` so
+refusals print cleanly without tracebacks (exit 1), `KeyboardInterrupt` exits 130,
+and unexpected defects preserve their full traceback.
+
+## Validate declarations early
+
+Constructing `ProjectSpec` checks `validate_root_contract` and
+`validate_identity_fields` immediately, and constructing a `CommandRegistry` checks
+every command declaration at once — target paths in the schema, declared hash names,
+and scope validity:
 
 ```python
-from honbu.flow import dispatch_command
+from honbu.flow import CommandRegistry
 
-dispatch_command(
-    handler, tokens,
-    root_type=RootConfig, hashes=HASHES, compose_spec=CONFIG,
-)
+COMMANDS = CommandRegistry([TRAIN, REPORT], root_type=RootConfig, hashes=HASHES)
 ```
 
-A project with a Typer or Click surface it likes calls this from its own callback
-and keeps everything else. What you lose is generated help and shell completion;
-what you keep is the whole resolution and run lifecycle.
-
-If you route commands yourself *above* Honbu — deciding between two commands by
-reading the configuration, for instance — you take on three things the dispatcher
-was doing: refusals must print as messages and exit 1 rather than raising a
-traceback, `KeyboardInterrupt` should exit 130, and `--help` must still reach the
-generated help.
-
-## Validate the declarations
-
-```python
-APP.validate()
-```
-
-Runs every declaration check at once — target paths that exist in the schema, hash
-names that are declared, deferred values absent from target templates, `--continue-from`
-paired with an artifact to continue from. Call it in a test, and a malformed command
-fails at import rather than at `rmtree`.
+Keep that construction at import time (or assert it in a test) so a malformed command
+fails immediately rather than at `rmtree`.

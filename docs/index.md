@@ -35,9 +35,10 @@ not by choosing an extra:
 
 | Layer | Import | What it gives you |
 | --- | --- | --- |
-| Core | `honbu` | The strict model base, field markers, hash declarations, atomic writes, path portability, template rendering |
-| Flow | `honbu.flow` | Declared commands, the fixed resolution order, collision-safe run directories, resume, the manifest, the CLI grammar |
-| Operations | `honbu.sweeps`, `honbu.compare`, `honbu.materialize` | Sweeps, run comparison, starter-tree materialization |
+| Core | `honbu`, `honbu.core` | The strict model base, base blocks (`HashedRuntimeConfig`), field markers, hash declarations, atomic writes, path portability, template rendering |
+| Flow | `honbu.flow` | CLI-free declared commands, `ProjectSpec`, config loading, the fixed resolution order, collision-safe run directories, resume, the manifest |
+| CLI | `honbu.cli`, `honbu.cli.presets` | Optional library-agnostic CLI helpers (`validate_override_tokens`, `split_dash_rule`, `exit_on_refusal`) and opt-in Typer option aliases and command builders |
+| Operations | `honbu.sweeps`, `honbu.compare`, `honbu.materialize` | Sweeps, config/run comparison and compatibility gating, starter-tree materialization and drift |
 
 The dependency direction is one-way and enforced by a test, so nothing below
 reaches up.

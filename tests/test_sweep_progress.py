@@ -340,3 +340,68 @@ def test_a_child_raising_propagates_and_leaves_the_rest_alone(tmp_path):
         "completed": 1,
         "initialized": 2,
     }
+
+
+# --- 7.5 & 7.10 execution policies, parameterized flags, retired_missing -----
+
+
+def test_child_argv_parameterizes_flag_spellings(tmp_path):
+    prepare(swept(tmp_path, {"epochs": [10, 20]}), tmp_path)
+    child = scan_sweep(sweep_dir_of(tmp_path)).children[0]
+    assert child_argv(child, resolved_flag="--run", resume_flag="--continue") == [
+        "--run",
+        str(child.run_dir),
+        "--continue",
+    ]
+
+
+def test_execute_sweep_on_error_continue_records_failed_and_propagates_interrupt(tmp_path):
+    prepare(swept(tmp_path, {"epochs": [10, 20, 30]}), tmp_path)
+
+    def flaky(child):
+        if child.index == 1:
+            raise RuntimeError("cuda oom")
+        finish(child.run_dir)
+
+    res = execute_sweep(sweep_dir_of(tmp_path), flaky, on_error="continue")
+    assert [c.index for c in res.ran] == [0, 2]
+    assert [f.index for f in res.failed] == [1]
+    assert "cuda oom" in str(res.failed[0].error)
+
+    # KeyboardInterrupt ALWAYS stops and propagates even under on_error="continue"
+    prepare(swept(tmp_path, {"epochs": [10, 20, 30, 40]}), tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        execute_sweep(
+            sweep_dir_of(tmp_path),
+            lambda c: (_ for _ in ()).throw(KeyboardInterrupt()),
+            on_error="continue",
+        )
+
+
+def test_execute_sweep_only_accepts_gate_values_and_refuses_unknown_selectors(tmp_path):
+    prepared = prepare(swept(tmp_path, {"epochs": [10, 20, 30]}), tmp_path)
+    target_gate = prepared.children[1].gate_value
+
+    res = execute_sweep(
+        sweep_dir_of(tmp_path),
+        lambda c: finish(c.run_dir),
+        only=[target_gate],
+    )
+    assert [c.index for c in res.ran] == [1]
+
+    with pytest.raises(RefusalError, match="unknown child selector"):
+        execute_sweep(sweep_dir_of(tmp_path), lambda c: finish(c.run_dir), only=[99])
+    with pytest.raises(RefusalError, match="unknown child selector"):
+        execute_sweep(sweep_dir_of(tmp_path), lambda c: finish(c.run_dir), only=["nonexistent-gate"])
+
+
+def test_deleted_retired_child_tracked_separately_from_active_missing(tmp_path):
+    first = prepare(swept(tmp_path, {"epochs": [10, 20, 30]}), tmp_path)
+    prepare(swept(tmp_path, {"epochs": [10, 20]}), tmp_path)
+    # Delete the retired child's directory (epochs=30)
+    shutil.rmtree(first.children[2].run_dir)
+
+    status = scan_sweep(sweep_dir_of(tmp_path))
+    assert status.missing == ()
+    assert len(status.retired_missing) == 1
+    assert "missing" not in status.summary()

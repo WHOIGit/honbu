@@ -641,7 +641,7 @@ def test_the_check_fires_only_when_a_sweep_block_is_actually_present():
 
 
 def test_the_sweep_block_is_excluded_from_behavioral_sources():
-    from honbu import excluded_source_paths
+    from honbu.core import excluded_source_paths
 
     assert ("sweep",) in excluded_source_paths(Root)
 
@@ -681,3 +681,88 @@ def test_the_exclusion_holds_even_when_a_hash_names_the_block_explicitly():
         hashes.compute({"config": empty}).entries["h"].value
         == hashes.compute({"config": swept}).entries["h"].value
     )
+
+
+# --- 7.10 bug fixes and built-in compositor wiring ---------------------------
+
+
+def test_empty_ordinary_axes_empty_nested_mappings_and_empty_covariant_options_refused():
+    with pytest.raises(RefusalError, match="lists no values"):
+        normalize_axes({"epochs": []})
+    with pytest.raises(RefusalError, match="empty mapping"):
+        normalize_axes({"model": {}})
+    with pytest.raises(RefusalError, match="assigns no paths"):
+        normalize_covariant_axes({"pair": [{}, {}]})
+    # Single-value ordinary axes remain permitted for CLI pinning
+    assert normalize_axes({"epochs": [10]}) == {"epochs": [10]}
+
+
+def test_override_key_normalizes_slashes_and_package_suffixes():
+    assert override_key("model/head@model.head=resnet") == "model.head"
+    assert override_key("~model/head") == "model.head"
+    assert override_key("++data/split=val") == "data.split"
+
+
+def test_declared_block_type_unwraps_optional_and_annotated():
+    from honbu.sweeps import declared_block_type
+
+    class CustomSweep(SweepBlock):
+        tag: str = "x"
+
+    class OptSweepRoot(StrictModel):
+        experiment: ExperimentConfig
+        sweep: Annotated[CustomSweep | None, DIRECTIVE] = Field(default_factory=CustomSweep)
+
+    assert declared_block_type(OptSweepRoot) is CustomSweep
+
+
+def test_sequence_index_lookup_warns_when_axis_displaces_sequence_entry():
+    class Item(StrictModel):
+        weight: float = 1.0
+
+    class SeqRoot(StrictModel):
+        experiment: ExperimentConfig
+        items: list[Item] = Field(default_factory=list)
+        sweep: SweepDeclaration = Field(default_factory=SweepBlock)
+
+    composed = {"experiment": {"name": "e"}, "items": [{"weight": 0.5}, {"weight": 1.5}]}
+    plan = plan_sweep(
+        SweepBlock(axes={"items.1.weight": [2.0, 3.0]}),
+        root_type=SeqRoot,
+        composed=composed,
+    )
+    assert any("items.1.weight=1.5" in w for w in plan.warnings)
+
+
+def test_plan_sweep_built_in_compose_spec_handles_nested_group_shadowing(tmp_path):
+    from honbu.flow import ComposeSpec
+
+    class HeadCfg(StrictModel):
+        layers: int = 2
+
+    class ModelCfg(StrictModel):
+        head: HeadCfg = Field(default_factory=HeadCfg)
+
+    class NestedRoot(StrictModel):
+        experiment: ExperimentConfig
+        model: ModelCfg = Field(default_factory=ModelCfg)
+        sweep: SweepDeclaration = Field(default_factory=SweepBlock)
+
+    (tmp_path / "configs" / "model" / "head").mkdir(parents=True)
+    (tmp_path / "configs" / "config.yaml").write_text(
+        "defaults:\n  - _self_\n  - model/head: shallow\n"
+        "experiment:\n  name: e\n"
+        "model:\n  head:\n    layers: 99\n"  # shadows group!
+    )
+    (tmp_path / "configs" / "model" / "head" / "shallow.yaml").write_text("layers: 1\n")
+    (tmp_path / "configs" / "model" / "head" / "deep.yaml").write_text("layers: 8\n")
+
+    spec = ComposeSpec(packaged=None, local="configs")
+    with pytest.raises(RefusalError, match="supplies 'model.head' directly"):
+        plan_sweep(
+            SweepBlock(axes={"model.head": ["shallow", "deep"]}),
+            root_type=NestedRoot,
+            composed={"experiment": {"name": "e"}, "model": {"head": {"layers": 99}}},
+            compose_spec=spec,
+            cwd=tmp_path,
+        )

@@ -18,17 +18,15 @@ from honbu import (
     OutputLeaf,
     PortablePath,
     RefusalError,
-    ResolvedPath,
     ResolvedString,
     RuntimeConfig,
     SourceHash,
     StrictModel,
-    TemplateContext,
-    hash_source,
     validate_identity_fields,
 )
+from honbu.core import TemplateContext, hash_source
 from honbu.errors import DeclarationError, TemplateError
-from honbu.flow import CommandSpec, Resolution, TargetSpec, resolve
+from honbu.flow import CommandSpec, ComposeSpec, ProjectSpec, Resolution, TargetSpec, resolve
 
 CONTEXT = TemplateContext(
     now_local=datetime(2026, 8, 26, 14, 30, 0),
@@ -42,7 +40,7 @@ class Runtime(RuntimeConfig):
 
 
 class Prepared(StrictModel):
-    dataset_hash: Annotated[ResolvedString, FromHash("dataset_hash")] = None
+    note: str | None = None
 
 
 class Data(StrictModel):
@@ -51,7 +49,6 @@ class Data(StrictModel):
 
 
 class TrainingOutputs(OutputBlock):
-    dir: ResolvedPath = None
     dir_template: str | None = "{experiment.name:slug}/{:timestamp}"
     metrics: OutputLeaf = Field(default_factory=lambda: OutputLeaf(dir=Path("metrics")))
     figures: OutputLeaf = Field(default_factory=lambda: OutputLeaf(dir=Path("figures")))
@@ -190,7 +187,6 @@ def test_an_input_reading_hash_defers_even_though_it_would_succeed(tmp_path):
     res = _resolve(cwd=tmp_path)
     assert res.deferred == ("dataset_hash",)
     assert "dataset_hash" not in res.hashes
-    assert res.portable.data.prepared.dataset_hash is None
 
 
 def test_only_the_commands_declared_hashes_are_computed(tmp_path):
@@ -290,7 +286,7 @@ EVAL = CommandSpec(
     name=("eval",),
     mode="augment",
     target=TARGET,
-    config_sources=("resolved", "continue"),
+    config_sources=("resolved", "fork"),
     hashes=("config_hash",),
 )
 
@@ -377,19 +373,241 @@ def test_a_null_valued_token_is_refused_rather_than_minting_entropy(tmp_path):
         )
 
 
-def test_an_overridden_target_template_naming_a_deferred_value_is_refused(tmp_path):
-    """The registry check only sees the committed schema default.
+def test_an_overridden_target_template_naming_a_dynamically_absent_hash_is_refused(tmp_path):
+    """When a pure (reads_inputs=False) hash returns None, referencing its FromHash
+    field in a target template is refused before rendering."""
 
-    A composed configuration may override the template, and the resolver's own
-    check compared dotted paths against the *rendered* text, so it could never
-    match. The run directory ended up named from entropy instead.
-    """
+    class OptBlock(StrictModel):
+        opt_hash: Annotated[ResolvedString, FromHash("optional_hash")] = None
+
+    class RootOptHash(Root):
+        opt: OptBlock = Field(default_factory=OptBlock)
+
+    hashes = HashRegistry(
+        [
+            FieldHash(name="config_hash", include=["experiment", "data", "epochs"]),
+            SourceHash(name="optional_hash", build=lambda ctx: None, reads_inputs=False),
+        ],
+        root_type=RootOptHash,
+    )
+    validate_identity_fields(RootOptHash, hashes)
+    cmd = CommandSpec(name=("train",), target=TARGET, hashes=("config_hash", "optional_hash"))
     composed = {
         **COMPOSED,
-        "training_outputs": {"dir_template": "{data.prepared.dataset_hash:coolname}"},
+        "training_outputs": {"dir_template": "{opt.opt_hash:coolname}"},
     }
-    with pytest.raises(RefusalError, match="deferred to work"):
+    with pytest.raises(RefusalError, match="unassigned"):
+        resolve(
+            composed,
+            root_type=RootOptHash,
+            command=cmd,
+            hashes=hashes,
+            context=CONTEXT,
+            cwd=tmp_path,
+        )
+
+
+def test_authoring_resolved_only_field_is_refused_when_not_replay(tmp_path):
+    composed = {**COMPOSED, "runtime": {"config_hash": "sha256:fake"}}
+    with pytest.raises(RefusalError, match=r"resolved-only.*runtime\.config_hash"):
         _resolve(composed, cwd=tmp_path)
+
+    # Replay accepts persisted resolved-only values cleanly.
+    replayed = _resolve(composed, cwd=tmp_path, replay=True)
+    assert replayed.portable.runtime.config_hash == replayed.hashes["config_hash"].value
+
+
+def test_resolve_accepts_explicit_sweep_id_without_authoring_it(tmp_path):
+    class SweptOutputs(TrainingOutputs):
+        dir_template: str | None = "{runtime.sweep_id}/{experiment.name:slug}"
+
+    class SweptRoot(Root):
+        training_outputs: SweptOutputs = Field(default_factory=SweptOutputs)
+
+    res = resolve(
+        COMPOSED,
+        root_type=SweptRoot,
+        command=TRAIN,
+        hashes=HashRegistry(
+            [FieldHash(name="config_hash", include=["experiment", "data", "epochs"])],
+            root_type=SweptRoot,
+        ),
+        context=CONTEXT,
+        cwd=tmp_path,
+        sweep_id="brave-otter",
+    )
+    assert res.portable.runtime.sweep_id == "brave-otter"
+    assert res.portable.training_outputs.dir == Path("brave-otter/reef-v3")
+
+
+def test_phase2_absolutizes_container_paths_and_respects_windows_absolute_paths(tmp_path):
+    from honbu.flow.resolve import anchor
+
+    class Item(StrictModel):
+        manifest: PortablePath
+
+    class RichData(StrictModel):
+        uri: PortablePath
+        win_path: PortablePath
+        by_name: dict[str, Item] = Field(default_factory=dict)
+        items: list[Item] = Field(default_factory=list)
+        extra_files: list[PortablePath] = Field(default_factory=list)
+        named_files: dict[str, PortablePath] = Field(default_factory=dict)
+
+    class RichRoot(Root):
+        data: RichData
+
+    res = resolve(
+        {
+            "experiment": {"name": "reef"},
+            "data": {
+                "uri": "./rel/a",
+                "win_path": "C:\\datasets\\coco",
+                "by_name": {"k": {"manifest": "m/k.csv"}},
+                "items": [{"manifest": "m/0.csv"}],
+                "extra_files": ["f/one.txt", "D:/abs/two.txt"],
+                "named_files": {"local": "n/a.txt", "win": "E:\\n\\b.txt"},
+            },
+        },
+        root_type=RichRoot,
+        command=TRAIN,
+        hashes=HashRegistry([FieldHash(name="config_hash", include=["experiment"])]),
+        context=CONTEXT,
+        cwd=tmp_path,
+    )
+    assert res.portable.data.uri == (tmp_path / "rel/a").resolve()
+    assert str(res.portable.data.win_path) == "C:\\datasets\\coco"
+    assert res.portable.data.by_name["k"].manifest == (tmp_path / "m/k.csv").resolve()
+    assert res.portable.data.items[0].manifest == (tmp_path / "m/0.csv").resolve()
+    assert res.portable.data.extra_files[0] == (tmp_path / "f/one.txt").resolve()
+    assert str(res.portable.data.extra_files[1]) == "D:/abs/two.txt"
+    assert res.portable.data.named_files["local"] == (tmp_path / "n/a.txt").resolve()
+    assert str(res.portable.data.named_files["win"]) == "E:\\n\\b.txt"
+    assert str(anchor(Path("C:\\runs\\exp"), base=tmp_path)) == "C:\\runs\\exp"
+
+
+def test_resolve_defaults_context_refuses_active_sweep_and_accepts_project_spec(tmp_path):
+    project = ProjectSpec(
+        root_type=Root,
+        compose_spec=ComposeSpec(packaged=None),
+        hashes=HASHES,
+    )
+    res = resolve(COMPOSED, command=TRAIN, project=project, cwd=tmp_path)
+    assert res.context.extras["command"] == "train"
+    assert res.hashes["config_hash"].value.startswith("sha256:")
+
+    with pytest.raises(RefusalError, match="active 'sweep' block"):
+        resolve(
+            {**COMPOSED, "sweep": {"axes": {"epochs": [10, 20]}}},
+            command=TRAIN,
+            project=project,
+            cwd=tmp_path,
+        )
+
+
+def test_phase7_leaf_authored_checks_warnings_cwd_relative_and_augment_rerender(
+    tmp_path, monkeypatch
+):
+    from honbu.core import paths as paths_mod
+
+    # 1. Schema defaults dir="metrics", caller authors dir_template without nulling dir.
+    composed_tpl = {
+        **COMPOSED,
+        "training_outputs": {"metrics": {"dir_template": "metrics/{experiment.name}"}},
+    }
+    res = _resolve(composed_tpl, cwd=tmp_path)
+    assert res.portable.training_outputs.metrics.dir == Path("metrics/reef v3")
+
+    # 2. Authoring BOTH leaf dir and dir_template is refused when replay=False.
+    with pytest.raises(RefusalError, match="sets both dir and dir_template"):
+        _resolve(
+            {
+                **COMPOSED,
+                "training_outputs": {
+                    "metrics": {"dir": "m", "dir_template": "metrics/{epochs}"}
+                },
+            },
+            cwd=tmp_path,
+        )
+
+    # 3. Leaf template sanitization warning is collected on resolution.warnings.
+    warned = _resolve(
+        {
+            "experiment": {"name": "reef:v3"},
+            "data": {"uri": "./datasets/coco8"},
+            "training_outputs": {"metrics": {"dir_template": "m/{experiment.name}"}},
+        },
+        cwd=tmp_path,
+    )
+    assert any("reef:v3" in w for w in warned.warnings)
+
+    # 4. Leaf cwd-relative dir is stored absolute.
+    cwd_leaf = _resolve(
+        {
+            **COMPOSED,
+            "training_outputs": {"metrics": {"dir": "./local_metrics"}},
+        },
+        cwd=tmp_path,
+    )
+    assert cwd_leaf.portable.training_outputs.metrics.dir == (tmp_path / "local_metrics").resolve()
+
+    # 5. Augmenting --resolved replay re-renders templated leaf in command.scope
+    #    unless leaf.dir was explicitly overridden.
+    eval_cmd = CommandSpec(
+        name=("eval",),
+        mode="augment",
+        target=TARGET,
+        scope=("training_outputs.metrics",),
+        config_sources=("resolved",),
+        hashes=("config_hash",),
+    )
+    existing = (tmp_path / "runs" / "reef-v3" / "earlier").resolve()
+    replayed_dict = {
+        **COMPOSED,
+        "epochs": 20,
+        "training_outputs": {
+            "dir": "reef-v3/earlier",
+            "dir_template": "{experiment.name:slug}/{:timestamp}",
+            "metrics": {"dir": "metrics/10", "dir_template": "metrics/{epochs}"},
+        },
+    }
+    rerendered = _resolve(
+        replayed_dict,
+        command=eval_cmd,
+        cwd=tmp_path,
+        existing_target=existing,
+        replay=True,
+        overrides=("epochs=20",),
+    )
+    assert rerendered.portable.training_outputs.metrics.dir == Path("metrics/20")
+
+    pinned = _resolve(
+        {
+            **replayed_dict,
+            "training_outputs": {
+                **replayed_dict["training_outputs"],
+                "metrics": {"dir": "metrics/custom", "dir_template": "metrics/{epochs}"},
+            },
+        },
+        command=eval_cmd,
+        cwd=tmp_path,
+        existing_target=existing,
+        replay=True,
+        overrides=("epochs=20", "training_outputs.metrics.dir=metrics/custom"),
+    )
+    assert pinned.portable.training_outputs.metrics.dir == Path("metrics/custom")
+
+    # 6. Leaf path_length_refusal is enforced on Windows when long paths are disabled.
+    monkeypatch.setattr(paths_mod, "is_windows", lambda: True)
+    monkeypatch.setattr(paths_mod, "windows_long_paths_enabled", lambda: False)
+    with pytest.raises(RefusalError, match="over the .* budget"):
+        _resolve(
+            {
+                **COMPOSED,
+                "training_outputs": {"metrics": {"dir": "x" * 200}},
+            },
+            cwd=tmp_path,
+        )
 
 
 def test_an_optionally_typed_output_block_still_anchors_to_the_output_root(tmp_path):

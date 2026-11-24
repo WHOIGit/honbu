@@ -1,23 +1,38 @@
 # Command line
 
-Honbu splits argv before any CLI library sees it, using each command's declared
-options and their arity. Every legal dash token is either a framework option or one
-the command declares, so the split is never ambiguous.
+Honbu does not own your CLI parser. `honbu.flow` is completely CLI-free, while two
+optional layers provide standard command-line behavior:
 
-## Framework options
+- **`honbu.cli`** — library-agnostic helpers (`validate_override_tokens`,
+  `split_dash_rule`, `select_config_source`, `exit_on_refusal`, `emit_warnings`,
+  `CONVENTIONAL_FLAGS`), importing no CLI library.
+- **`honbu.cli.presets`** — opt-in Typer presets (`HYDRA_CONTEXT_SETTINGS`,
+  `Annotated` option aliases, customizable option factories, and mountable command
+  builders for materialization and comparison).
 
-| Option | Takes a value | Meaning |
-| --- | --- | --- |
-| `--config PATH` | yes | compose that file instead of the search path |
-| `--resolved REF` | yes | replay a prior run's resolved configuration |
-| `--continue-from REF` | yes | start a new run from a prior run's authored form |
-| `--config-dir DIR` | yes, repeatable | prepend a configuration directory |
-| `--clobber` | no | permit clearing within the command's declared scope |
-| `--resume` | no | continue an unfinished run |
+## Conventional options
 
-A command only accepts the ones its declaration implies. Offering `--clobber` on a
-command with no target is refused, and the generated help lists exactly what the
-parser accepts — one derivation feeds both, so they cannot drift apart.
+`honbu.cli.CONVENTIONAL_FLAGS` and `honbu.cli.presets` use these standard spellings
+(projects may rename any flag via the option factories):
+
+| Option | Alias in `honbu.cli.presets` | Takes a value | Meaning |
+| --- | --- | --- | --- |
+| `--config PATH` | `ConfigOpt` | yes | compose that file instead of the search path |
+| `--resolved REF` | `ResolvedOpt` | yes | replay a prior run's resolved configuration |
+| `--fork-from REF` | `ForkFromOpt` | yes | start a new run from a prior run's authored `config/composed.yaml` |
+| `--fork-artifact KEY` | `ForkArtifactOpt` | yes | select which parent artifact key to record in `manifest.parent` |
+| `--config-dir DIR` | `ConfigDirsOpt` | yes, repeatable | prepend a configuration directory |
+| `--clobber` | `ClobberOpt` | no | permit clearing within the command's declared scope |
+| `--resume` | `ResumeOpt` | no | continue an unfinished run |
+
+Pass `context_settings=HYDRA_CONTEXT_SETTINGS` on Typer commands so Hydra overrides
+(`key=value`, `+key=value`, `~key`) pass through `ctx.args`, then validate them with
+`validate_override_tokens(ctx.args)` and resolve the single active source with
+`select_config_source(...)`.
+
+For non-Typer CLIs (Click, `argparse`, or manual argv handling), `split_dash_rule`
+splits raw argv tokens into leading flags/options and trailing overrides using the
+dash rule.
 
 ## Override grammar
 
@@ -46,10 +61,11 @@ yourproject train 'outputs.dir_template="{experiment.name}/{runtime.run_id}"'
 
 ## Exit codes
 
+When your command runs inside `with exit_on_refusal(prog=...):`:
+
 | Code | Means |
 | --- | --- |
 | 0 | done |
-| 1 | a refusal — one message, no traceback |
-| 2 | unknown command |
-| 130 | interrupted |
+| 1 | a refusal — one message on stderr, no traceback |
+| 130 | interrupted (`KeyboardInterrupt`) |
 | *(traceback)* | a defect, in Honbu or in your handler |
