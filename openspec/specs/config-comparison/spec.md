@@ -7,11 +7,11 @@ Defines schema-aware N-way comparison of configuration operands (`default`, `fil
 ## Requirements
 
 ### Requirement: Comparison operands are configuration references
-Comparison SHALL accept two or more operands referencing `default`, `file`,
-`composed` (a prior run's `composed.yaml`), or `resolved` (a prior run's
-`resolved.yaml`), each with optional `overrides`, `extra_dirs`, and `config_index`
-(defaulting to 1). Both `composed` and `resolved` SHALL accept either a file or a
-run directory, normalizing each operand to a mapping before comparison.
+Comparison SHALL accept two or more operands referencing `default`, `packaged`
+(packaged defaults ignoring local shadows, with optional `config_name` for
+named preset roots), `file` (inheriting `compose_spec` fallbacks), `composed`,
+or `resolved`, each with optional `overrides`, `extra_dirs`, and `config_index`
+(defaulting to 1). `composed` and `resolved` SHALL accept a file or run dir.
 
 #### Scenario: Mixed operand kinds
 - **WHEN** an authored file and a prior run's resolved configuration are compared
@@ -34,6 +34,11 @@ run directory, normalizing each operand to a mapping before comparison.
 - **WHEN** an operand marks `fragment=True` for a configuration-group file
 - **THEN** it is comparable only at `literal`, because it cannot validate against
   a root schema
+
+#### Scenario: Packaged operand ignores local shadow and supports named presets
+- **WHEN** a `ConfigOperand(source="packaged")` (or with `config_name="configA"`)
+  is compared against `default` or a local file
+- **THEN** it composes strictly from packaged defaults ignoring `./configs/`
 
 ### Requirement: N-way comparison with exact value distinction
 Comparison SHALL support any number of operands, reporting one entry per differing

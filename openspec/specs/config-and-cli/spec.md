@@ -72,12 +72,11 @@ promotion to the configuration root.
 
 ### Requirement: Declared configuration sources and typed loader
 The framework SHALL define four mutually exclusive configuration sources —
-`default` (the default config name), `file` (an authored file), `resolved` (a
-prior run's resolved configuration given as a file or run directory), and `fork`
-(a parent run to fork from) — and SHALL expose a typed `load_config` function in
-`honbu.flow` accepting overrides on top of any of them with no CLI coupling. A
-command SHALL declare which sources it accepts; a command declaring none SHALL
-compose nothing.
+`default`, `file`, `resolved`, and `fork` — and expose a typed `load_config`
+in `honbu.flow` with no CLI coupling. When loading `file` with a `compose_spec`
+or `project`, composition SHALL search `[target.parent, *extra_dirs, local, packaged]`
+so authored roots resolve unmaterialized packaged groups; `resolved` and `fork`
+SHALL remain self-contained snapshots.
 
 #### Scenario: Conflicting sources
 - **WHEN** more than one configuration source is supplied
@@ -94,6 +93,12 @@ compose nothing.
 #### Scenario: Overrides on an authored file
 - **WHEN** an authored file is loaded with overrides
 - **THEN** the overrides apply to it as they would to the default root
+
+#### Scenario: Authored file resolves unmaterialized packaged groups
+- **WHEN** `load_config("file", path, project=PROJECT)` composes a standalone
+  root referencing a packaged group not copied locally
+- **THEN** composition searches `[target.parent, *extra_dirs, local, packaged]`
+  and resolves the packaged group cleanly
 
 #### Scenario: Run directory names a prior configuration
 - **WHEN** a prior run is named by its directory for `resolved` or `fork`
@@ -192,12 +197,11 @@ flag-agnostic wording by default and accept optional CLI hints.
   framework flag
 
 ### Requirement: Opt-in library-agnostic CLI helpers (`honbu.cli`)
-The framework SHALL expose library-agnostic CLI pattern helpers in `honbu.cli`
-(without importing Typer): dash-rule override validation (`validate_override_tokens`
-and `split_dash_rule`), flag-name-independent source selection
-(`select_config_source`), clean refusal-versus-defect exit handling, warning
-emission, and documented conventional flag names (`--config`, `--resolved`,
-`--fork-from`, `--fork-artifact`, `--config-dir`, `--clobber`, `--resume`).
+`honbu.cli` SHALL expose library-agnostic helpers without importing Typer:
+`validate_override_tokens`, `split_dash_rule`, `select_config_source`,
+`resolve_positional_config` (two-channel deduplicated lookup across direct path
+and search path, refusing 0 matches, ambiguous >1 unique matches, and run
+directories), `exit_on_refusal`, `emit_warnings`, and `CONVENTIONAL_FLAGS`.
 
 #### Scenario: Dash-rule catches mistyped options in overrides
 - **WHEN** a dash-prefixed token lands in override tokens passed to
@@ -222,17 +226,28 @@ emission, and documented conventional flag names (`--config`, `--resolved`,
   passes the value to `select_config_source`
 - **THEN** mutual exclusivity and command-accepted sources are enforced identically
 
+#### Scenario: Forgiving positional config resolves shadowed match and refuses ambiguity
+- **WHEN** `resolve_positional_config` runs on a token matching a local shadow
+  of a packaged config versus a token matching two distinct filesystem paths
+- **THEN** the shadowed match returns one path while the two distinct paths
+  refuse as ambiguous listing both candidates and prompting `-c` / `--config`
+
+#### Scenario: Run directory passed to positional config resolver
+- **WHEN** a run directory containing `manifest.json` or `config/resolved.yaml`
+  is passed to `resolve_positional_config`
+- **THEN** it refuses hinting `--resolved` or `--fork-from`
+
 ### Requirement: Opt-in Typer presets (`honbu.cli.presets`)
-The framework SHALL provide opt-in Typer presets in `honbu.cli.presets`: Hydra
-context settings, ready-made `Annotated` option aliases for the conventional
-flags, customizable option factories so projects can override flag names or help
-text, and optional mountable Typer command builders. Importing presets SHALL be
-entirely optional.
+`honbu.cli.presets` SHALL provide optional Typer presets: `HYDRA_CONTEXT_SETTINGS`,
+option factories and `Annotated` aliases (`ConfigOpt` exposing `-c`/`--config`),
+`build_materialize_command` (using `--clobber` and optional `--from <file>`),
+and N-way `build_compare_command` accepting `@default`, `@packaged`,
+`@packaged:<name>`, run directories, and forgiving config names/paths.
 
 #### Scenario: One-line adoption of conventional Typer options
 - **WHEN** a project imports option aliases from `honbu.cli.presets`
-- **THEN** its commands share consistent flag names, types, and help text while
-  retaining full Typer validation, rich help, and shell completion
+- **THEN** its commands share consistent flag names (including `-c`/`--config`),
+  types, and help text while retaining full Typer validation and completion
 
 #### Scenario: Customized flag spelling via factory
 - **WHEN** a project uses an option factory to rename a flag or customize help
@@ -243,14 +258,17 @@ entirely optional.
 - **THEN** it never imports `honbu.cli.presets` and all of `honbu.core`,
   `honbu.flow`, and `honbu.cli` work identically
 
+#### Scenario: Mountable materialize and compare builders use harmonized flags
+- **WHEN** projects mount `build_materialize_command` or `build_compare_command`
+- **THEN** materialize uses `--clobber` and `--from` while compare accepts
+  N-way operands including `@default`, `@packaged`, and `@packaged:<name>`
+
 ### Requirement: Passive ProjectSpec bundle and curated top-level exports
 `honbu.flow` SHALL export a passive frozen `ProjectSpec` dataclass bundling
-`root_type`, `compose_spec`, `hashes`, `templates`, and `config_hash_name` (running
-root-contract and identity-field validation at construction with zero CLI or IoC
-coupling), accepted across `flow`, `sweeps`, `compare`, `materialize`, and
-`cli.presets` alongside individual kwargs. Top-level `honbu` SHALL export only the
-everyday schema, marker, hash, and error surface, keeping low-level helpers in
-`honbu.core.*`.
+`root_type`, `compose_spec`, `hashes`, `templates`, `config_hash_name`, and
+optional `write_cli_txt: bool = False` (validating schema and identity fields
+at construction with zero CLI or IoC coupling). Top-level `honbu` SHALL export
+only the everyday schema, marker, hash, and error surface.
 
 #### Scenario: Project constructs ProjectSpec once at import
 - **WHEN** a project defines `PROJECT = ProjectSpec(root_type=RootConfig, compose_spec=SPEC, hashes=HASHES)`

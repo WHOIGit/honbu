@@ -558,12 +558,12 @@ SHALL reference the invocation that produced them.
   names
 
 ### Requirement: Config provenance bundle
-A mutating command SHALL atomically persist the composed configuration, the
-authoritative resolved configuration, and one artifact per computed hash, before
-work begins; SHALL persist each deferred hash as it is completed during work; and
-SHALL record the invocation in the manifest. The bundle for the first
-configuration SHALL live at a fixed path and subsequent ones beneath an indexed
-path.
+A mutating command SHALL atomically persist `composed.yaml`, portable
+`resolved.yaml`, and one artifact per computed hash under `config/` before work
+begins, persisting deferred hashes as completed and recording each invocation
+in `manifest.json`. When opt-in `write_cli_txt=True` is set on `open_run` or
+`ProjectSpec` and `argv_text` is non-empty, `open_run` SHALL also atomically
+write `config/cli.txt`.
 
 #### Scenario: Deferred hash completed mid-run
 - **WHEN** a deferred hash is completed forty minutes into a run
@@ -572,6 +572,12 @@ path.
 #### Scenario: Completed invocation
 - **WHEN** work completes
 - **THEN** the manifest records its registered artifacts and identities
+
+#### Scenario: Opt-in cli.txt written for CLI invocations only
+- **WHEN** `open_run` runs with `write_cli_txt=True` and non-empty `argv_text`
+  versus empty `argv_text`
+- **THEN** `config/cli.txt` is atomically written in the first case and omitted
+  in the second
 
 ### Requirement: Recorded lineage for forked runs
 Forking from an existing run SHALL produce a new run directory and SHALL record
