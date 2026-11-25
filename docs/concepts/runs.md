@@ -9,6 +9,7 @@ runs/linefit/dynamic-macaw/
 ├── config/
 │   ├── composed.yaml    # authored, portable
 │   ├── resolved.yaml    # resolved, absolute
+│   ├── cli.txt          # opt-in: the producing command line
 │   └── hashes/          # one artifact per digest
 ├── checkpoints/         # yours
 └── reports/             # yours

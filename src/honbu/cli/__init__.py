@@ -2,9 +2,9 @@
 
 Projects fully own their CLI library, command tree, flag names, and help text.
 This module exports reusable building blocks — dash-rule override validation,
-flag-independent configuration source selection, refusal-versus-defect exit
-handling, warning emission, and documented conventional flag names — with zero
-Typer dependency.
+flag-independent configuration source selection, forgiving positional
+``[CONFIG]`` lookup, refusal-versus-defect exit handling, warning emission, and
+documented conventional flag names — with zero Typer dependency.
 
 For ready-made Typer option aliases and mountable command builders, import
 :mod:`honbu.cli.presets`.
@@ -15,6 +15,7 @@ from honbu.cli.helpers import (
     DashRuleSplit,
     emit_warnings,
     exit_on_refusal,
+    resolve_positional_config,
     select_config_source,
     split_dash_rule,
     validate_override_tokens,
@@ -25,6 +26,7 @@ __all__ = [
     "DashRuleSplit",
     "emit_warnings",
     "exit_on_refusal",
+    "resolve_positional_config",
     "select_config_source",
     "split_dash_rule",
     "validate_override_tokens",

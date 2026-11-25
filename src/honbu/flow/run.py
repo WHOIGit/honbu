@@ -57,6 +57,7 @@ from honbu.core.targets import (
 CONFIG_DIRNAME = "config"
 COMPOSED_NAME = "composed.yaml"
 RESOLVED_NAME = "resolved.yaml"
+CLI_TXT_NAME = "cli.txt"
 
 
 def _dump_yaml(payload: Mapping[str, Any]) -> str:
@@ -416,6 +417,7 @@ def initialize_run(
     config_hash_name: str | None = None,
     cli_hint: str | None = None,
     project: ProjectSpec | None = None,
+    write_cli_txt: bool | None = None,
 ) -> Run:
     """Prepare the target and persist the bundle, without starting work.
 
@@ -440,6 +442,7 @@ def initialize_run(
         config_hash_name=config_hash_name,
         cli_hint=cli_hint,
         project=project,
+        write_cli_txt=write_cli_txt,
     )
 
 
@@ -457,6 +460,7 @@ def open_run(
     config_hash_name: str | None = None,
     cli_hint: str | None = None,
     project: ProjectSpec | None = None,
+    write_cli_txt: bool | None = None,
 ) -> Iterator[Run]:
     """Prepare the target, persist the bundle, and yield the live run.
 
@@ -470,6 +474,12 @@ def open_run(
     out from under its host is worse than an occasionally stale state. ``running``
     is resumable for exactly this reason: the next allocation picks up where the
     last one was cut off.
+
+    ``write_cli_txt`` (defaulting to ``project.write_cli_txt``, else ``False``)
+    opts in to atomically writing ``cli.txt`` beside ``composed.yaml`` when
+    ``argv_text`` is non-empty, so a project never writes into ``config/`` itself.
+    It records the invocation that first produced that configuration; later
+    invocations sharing it (a resume, say) are recorded in the manifest instead.
     """
     run = _prepare(
         resolution,
@@ -483,6 +493,7 @@ def open_run(
         config_hash_name=config_hash_name,
         cli_hint=cli_hint,
         project=project,
+        write_cli_txt=write_cli_txt,
     )
     manifest = run.manifest
 
@@ -569,6 +580,7 @@ def _prepare(
     config_hash_name: str | None,
     cli_hint: str | None,
     project: ProjectSpec | None,
+    write_cli_txt: bool | None = None,
 ) -> Run:
     """Everything both entry points do: target, manifest, bundle, invocation."""
     command = resolution.command
@@ -654,6 +666,15 @@ def _prepare(
     config_dir = config_dir_for(run_dir, index)
     if is_new or not (config_dir / RESOLVED_NAME).is_file():
         write_bundle(config_dir, composed=composed, resolution=resolution)
+    wants_cli_txt = (
+        write_cli_txt
+        if write_cli_txt is not None
+        else (project.write_cli_txt if project is not None else False)
+    )
+    if wants_cli_txt and argv_text.strip():
+        cli_path = config_dir / CLI_TXT_NAME
+        if is_new or not cli_path.is_file():
+            atomic_write_text(cli_path, argv_text.rstrip("\n") + "\n")
 
     preserve_existing = command.mode == "augment" and index > 1
     existing_hashes = manifest.data["hashes"]

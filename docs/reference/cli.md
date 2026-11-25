@@ -17,7 +17,7 @@ optional layers provide standard command-line behavior:
 
 | Option | Alias in `honbu.cli.presets` | Takes a value | Meaning |
 | --- | --- | --- | --- |
-| `--config PATH` | `ConfigOpt` | yes | compose that file instead of the search path |
+| `-c`, `--config PATH` | `ConfigOpt` | yes | compose that file, backed by the search path, instead of the default root |
 | `--resolved REF` | `ResolvedOpt` | yes | replay a prior run's resolved configuration |
 | `--fork-from REF` | `ForkFromOpt` | yes | start a new run from a prior run's authored `config/composed.yaml` |
 | `--fork-artifact KEY` | `ForkArtifactOpt` | yes | select which parent artifact key to record in `manifest.parent` |
@@ -29,6 +29,18 @@ Pass `context_settings=HYDRA_CONTEXT_SETTINGS` on Typer commands so Hydra overri
 (`key=value`, `+key=value`, `~key`) pass through `ctx.args`, then validate them with
 `validate_override_tokens(ctx.args)` and resolve the single active source with
 `select_config_source(...)`.
+
+### Forgiving positional `[CONFIG]`
+
+`resolve_positional_config(token, project=PROJECT, extra_dirs=...)` turns a
+positional token such as `configA` or `studies/v1_baseline` into one file, pairing
+naturally with the exact `-c`/`--config`. It looks in two places: the filesystem
+(`<tok>`, or `<tok>.yaml` when omitted) and the first search-path directory holding
+it (`--config-dir` overlays, `./configs`, packaged), skipping the search path for
+absolute, `./`-anchored, or `..`-traversing paths. A local copy shadowing a
+packaged default counts once. No match refuses with a hint about `key=value` and
+`--flag` spellings; two distinct matches refuse listing both and asking for
+`-c`/`--config`; a run directory refuses pointing at `--resolved` or `--fork-from`.
 
 For non-Typer CLIs (Click, `argparse`, or manual argv handling), `split_dash_rule`
 splits raw argv tokens into leading flags/options and trailing overrides using the

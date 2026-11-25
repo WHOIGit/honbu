@@ -33,6 +33,8 @@ class ProjectSpec:
     hashes: HashRegistry = field(default_factory=lambda: HashRegistry([]))
     templates: TemplateRegistry | None = None
     config_hash_name: str = CONFIG_HASH_NAME
+    #: Opt in to ``open_run`` writing ``config/cli.txt`` for CLI invocations.
+    write_cli_txt: bool = False
 
     def __post_init__(self) -> None:
         validate_root_contract(self.root_type)

@@ -272,3 +272,148 @@ def test_typer_materialize_command_builder_with_project_spec(tmp_path, monkeypat
     assert applied.exit_code == 0, applied.output
     assert (tmp_path / "out_cfg" / "config.yaml").is_file()
     assert (tmp_path / "out_cfg" / "backbone" / "torchvision" / "efficientnet_b0.yaml").is_file()
+
+
+# --------------------------------------------------------------------------- #
+# from_file: transitive local shadow, local-only skip, --clobber and --from
+# --------------------------------------------------------------------------- #
+
+
+def _local_edit_scenario(tmp_path, monkeypatch, pkg_name):
+    """A materialized local tree whose edits now reference new options.
+
+    ``configs/config.yaml`` selects ``model: small`` (materialized, and edited to
+    pull in the packaged backbone) plus a custom local-only ``data: mine``.
+    """
+    _make_packaged_tree(tmp_path, pkg_name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    local = tmp_path / "configs"
+    (local / "model").mkdir(parents=True)
+    (local / "data").mkdir()
+    (local / "config.yaml").write_text(
+        "defaults:\n  - _self_\n  - data: mine\n  - model: small\nexperiment:\n  name: edited\n"
+    )
+    (local / "data" / "mine.yaml").write_text("uri: ./mine\n")
+    # A transitive edit: the local group file now pulls an unmaterialized option.
+    (local / "model" / "small.yaml").write_text(
+        "defaults:\n  - /backbone/torchvision@backbone: efficientnet_b0\nwidth: 8\n"
+    )
+    return local
+
+
+def test_from_file_honors_transitive_local_edits_and_skips_local_only(
+    tmp_path, monkeypatch
+):
+    local = _local_edit_scenario(tmp_path, monkeypatch, "shadow_pkg")
+    spec = ComposeSpec(packaged="shadow_pkg")
+    root = MaterializationRoot.from_file(local / "config.yaml")
+
+    closure = closure_for_root(root, compose_spec=spec)
+    assert "backbone/torchvision/efficientnet_b0.yaml" in closure
+    assert "data/mine.yaml" in closure  # selected; filtered by the planner
+
+    plan = plan_materialization(
+        local,
+        scopes={"edit": MaterializationScope("edit", roots=(root,))},
+        selected=("edit",),
+        compose_spec=spec,
+    )
+    actions = {
+        item.destination.relative_to(local).as_posix(): item.action for item in plan.files
+    }
+    assert actions == {
+        "backbone/torchvision/efficientnet_b0.yaml": "create",
+        "model/small.yaml": "skip",
+    }
+    apply_materialization(plan)
+    # The edited local file is never replaced, and the custom file is untouched.
+    assert "width: 8" in (local / "model" / "small.yaml").read_text()
+    assert (local / "data" / "mine.yaml").read_text() == "uri: ./mine\n"
+    assert (local / "backbone" / "torchvision" / "efficientnet_b0.yaml").is_file()
+
+
+def test_packaged_roots_still_refuse_missing_packaged_files(tmp_path, monkeypatch):
+    import pytest
+
+    from honbu.errors import DeclarationError
+
+    _make_packaged_tree(tmp_path, "strict_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    pkg_copy = tmp_path / "unpacked"
+    pkg_copy.mkdir()
+    (pkg_copy / "config.yaml").write_text("x: 1\n")  # lacks the closure's group files
+    with pytest.raises(DeclarationError, match="closure names no packaged file"):
+        plan_materialization(
+            tmp_path / "out",
+            scopes={"s": MaterializationScope("s", roots=("config",))},
+            selected=("s",),
+            compose_spec=ComposeSpec(packaged="strict_pkg"),
+            packaged_root=pkg_copy,
+        )
+
+
+def _materialize_app(tmp_path, pkg_name, **kwargs):
+    app = typer.Typer()
+    app.command("init")(
+        build_materialize_command(
+            compose_spec=ComposeSpec(packaged=pkg_name),
+            scopes={
+                "starter": MaterializationScope(
+                    "starter", roots=(MaterializationRoot("config"),)
+                )
+            },
+            defaults=("starter",),
+            default_destination=tmp_path / "configs",
+            **kwargs,
+        )
+    )
+    return app
+
+
+def test_typer_materialize_command_clobber_replaces_overwrite(tmp_path, monkeypatch):
+    _make_packaged_tree(tmp_path, "clobber_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    app = _materialize_app(tmp_path, "clobber_pkg")
+    runner = CliRunner()
+
+    assert runner.invoke(app, []).exit_code == 0
+    edited = tmp_path / "configs" / "model" / "small.yaml"
+    edited.write_text("width: 99\n")
+
+    kept = runner.invoke(app, [])
+    assert kept.exit_code == 0, kept.output
+    assert edited.read_text() == "width: 99\n"
+
+    legacy = runner.invoke(app, ["--overwrite"])
+    assert legacy.exit_code != 0
+
+    clobbered = runner.invoke(app, ["--clobber"])
+    assert clobbered.exit_code == 0, clobbered.output
+    assert "overwrite" in clobbered.output
+    assert edited.read_text() == "width: 16\n"
+
+
+def test_typer_materialize_command_from_file(tmp_path, monkeypatch):
+    local = _local_edit_scenario(tmp_path, monkeypatch, "from_pkg")
+    app = _materialize_app(tmp_path, "from_pkg")
+    runner = CliRunner()
+
+    dry = runner.invoke(app, ["--from", str(local / "config.yaml"), "--dry-run"])
+    assert dry.exit_code == 0, dry.output
+    assert "1 create, 1 skip" in dry.output
+    assert "backbone/torchvision/efficientnet_b0.yaml" in dry.output
+    # --from without --scope plans only that closure, never the defaults.
+    assert "data/local.yaml" not in dry.output
+    assert not (local / "backbone").exists()
+
+    combined = runner.invoke(
+        app, ["--from", str(local / "config.yaml"), "--scope", "starter", "--dry-run"]
+    )
+    assert combined.exit_code == 0, combined.output
+    assert "data/local.yaml" in combined.output
+
+    missing = runner.invoke(app, ["--from", str(tmp_path / "nope.yaml")])
+    assert missing.exit_code == 1
+    assert "does not exist" in missing.output
+    assert "Traceback" not in missing.output

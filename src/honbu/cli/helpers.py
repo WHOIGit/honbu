@@ -13,8 +13,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TextIO
 
+from honbu.core.targets import MANIFEST_NAME
 from honbu.errors import HonbuError, RefusalError
-from honbu.flow.compose import ALL_CONFIG_SOURCES, ConfigSource, check_overrides
+from honbu.flow.compose import (
+    ALL_CONFIG_SOURCES,
+    ComposeSpec,
+    ConfigSource,
+    check_overrides,
+    search_dirs,
+)
+from honbu.flow.project import ProjectSpec
 
 #: Conventional CLI flag spellings shared across docs, presets, and default hints.
 #: Projects are free to spell any flag differently and pass custom labels to
@@ -149,6 +157,122 @@ def select_config_source(
             f"{labels.get(source, source)} is not accepted by this command; use {offered}"
         )
     return source, value
+
+
+#: Suffix a positional config token may omit (Hydra composes ``.yaml`` only).
+_YAML_SUFFIX = ".yaml"
+
+
+def _candidates(base: Path, token: str) -> list[Path]:
+    """The ``.yaml`` file ``token`` names relative to ``base`` (if present)."""
+    direct = base / token
+    candidate = (
+        direct
+        if direct.suffix.lower() == _YAML_SUFFIX
+        else direct.with_name(direct.name + _YAML_SUFFIX)
+    )
+    return [candidate.resolve()] if candidate.is_file() else []
+
+
+def _is_run_dir(path: Path) -> bool:
+    from honbu.flow.run import CONFIG_DIRNAME, RESOLVED_NAME
+
+    return path.is_dir() and (
+        (path / MANIFEST_NAME).is_file()
+        or (path / CONFIG_DIRNAME / RESOLVED_NAME).is_file()
+    )
+
+
+def resolve_positional_config(
+    token: str | Path,
+    *,
+    compose_spec: ComposeSpec | None = None,
+    project: ProjectSpec | None = None,
+    extra_dirs: Sequence[Path | str] = (),
+    cwd: Path | None = None,
+    reject_run_dir: bool = True,
+) -> Path:
+    """Resolve a forgiving positional ``[CONFIG]`` token to one authored YAML file.
+
+    Two channels are consulted and their matches deduplicated by resolved path:
+
+    1. **Direct filesystem** — ``<tok>`` relative to ``cwd`` (or absolute),
+       appending ``.yaml`` when omitted.
+    2. **Search path** — the *first* (highest-precedence) directory of
+       ``[*extra_dirs, local, packaged]`` holding ``<tok>`` (or ``<tok>.yaml``).
+       Skipped for absolute, ``./``-anchored, or ``..``-traversing paths so an
+       explicit filesystem path cannot escape a search directory or collide with
+       it. Only the first hit counts, so a local copy shadowing a packaged
+       default is one match rather than an ambiguity.
+
+    Zero matches refuse (hinting that ``key=value`` overrides and ``--flags`` are
+    spelled differently); more than one distinct match refuses listing every
+    candidate and asking for the exact ``-c`` / ``--config``. A run directory
+    refuses when ``reject_run_dir`` is set, pointing at ``--resolved`` or
+    ``--fork-from``, because a positional config is something you author.
+    """
+    spec = (
+        compose_spec
+        if compose_spec is not None
+        else (project.compose_spec if project is not None else None)
+    )
+    text = str(token)
+    if not text.strip():
+        raise RefusalError("an empty configuration name was given")
+    token_path = Path(text)
+    if token_path.suffix.lower() == ".yml":
+        raise RefusalError(
+            f"{text!r} uses a '.yml' extension; configuration files must use '.yaml'"
+        )
+    base = (cwd or Path.cwd()).resolve()
+    direct_base = token_path if token_path.is_absolute() else base / token_path
+
+    if _is_run_dir(direct_base):
+        if reject_run_dir:
+            raise RefusalError(
+                f"{text!r} is a run directory, not an authored configuration; replay it "
+                f"with {CONVENTIONAL_FLAGS['resolved']} or branch from it with "
+                f"{CONVENTIONAL_FLAGS['fork_from']}"
+            )
+
+    found: list[Path] = list(_candidates(base, text))
+    searched: tuple[Path, ...] = ()
+    explicit_fs = (
+        token_path.is_absolute()
+        or ".." in token_path.parts
+        or text.startswith("./")
+        or text.startswith(".\\")
+    )
+    if not explicit_fs:
+        searched = search_dirs(
+            spec if spec is not None else ComposeSpec(packaged=None, local=None),
+            extra_dirs,
+            cwd=base,
+        )
+        for directory in searched:
+            hits = _candidates(directory, text)
+            if hits:
+                found.extend(hits)
+                break
+
+    unique = list(dict.fromkeys(found))
+    if len(unique) == 1:
+        return unique[0]
+    config_flag = CONVENTIONAL_FLAGS["config"]
+    if not unique:
+        where = [str(base)] + [str(path) for path in searched]
+        listed = "\n  ".join(dict.fromkeys(where))
+        raise RefusalError(
+            f"no configuration named {text!r} was found in:\n  {listed}\n"
+            "Configuration overrides are spelled key=value (or ~key), and options "
+            "begin with --; check the token or pass an explicit "
+            f"-c/{config_flag} path."
+        )
+    listed = "\n  ".join(str(path) for path in unique)
+    raise RefusalError(
+        f"configuration name {text!r} is ambiguous; it matches:\n  {listed}\n"
+        f"Choose one explicitly with -c/{config_flag} <path>."
+    )
 
 
 @contextmanager

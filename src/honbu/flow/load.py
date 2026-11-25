@@ -100,8 +100,15 @@ def load_config(
         case "file":
             if reference is None:
                 raise RefusalError("configuration source 'file' requires a file path")
+            # An authored root falls back to the project's search path so it can
+            # select packaged groups never materialized locally; prior-run
+            # snapshots below stay self-contained.
             composed = compose_file(
-                reference, overrides=override_tuple, extra_dirs=extra_dirs
+                reference,
+                overrides=override_tuple,
+                extra_dirs=extra_dirs,
+                compose_spec=spec,
+                cwd=cwd,
             )
             return LoadedConfig(
                 composed=composed,

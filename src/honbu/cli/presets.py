@@ -13,7 +13,12 @@ from typing import Annotated, Any
 
 import typer
 
-from honbu.cli.helpers import CONVENTIONAL_FLAGS, exit_on_refusal, validate_override_tokens
+from honbu.cli.helpers import (
+    CONVENTIONAL_FLAGS,
+    exit_on_refusal,
+    split_dash_rule,
+    validate_override_tokens,
+)
 from honbu.core.hashes import HashRegistry
 from honbu.errors import DeclarationError
 from honbu.flow.compose import ComposeSpec
@@ -39,8 +44,8 @@ def config_option(
     *param_decls: str,
     help: str = "Compose this authored YAML file instead of the default search path.",
 ) -> Any:
-    """Typer option factory for an authored configuration file."""
-    decls = param_decls or (CONVENTIONAL_FLAGS["config"],)
+    """Typer option factory for an authored configuration file (``-c`` / ``--config``)."""
+    decls = param_decls or ("-c", CONVENTIONAL_FLAGS["config"])
     return typer.Option(*decls, help=help)
 
 
@@ -128,6 +133,11 @@ def build_materialize_command(
 ) -> Callable[..., None]:
     """Build a mountable Typer command for config materialization (D27).
 
+    Flags: ``--scope`` (repeatable), ``--from FILE`` (plan the closure of an
+    authored file, pulling in only newly referenced packaged options), ``--dest``,
+    ``--clobber`` (overwrite existing local files; spelled like
+    ``CONVENTIONAL_FLAGS["clobber"]``), and ``--dry-run``.
+
     Mount under whatever command name the project chooses::
 
         app.command("materialize")(build_materialize_command(project=PROJECT, scopes=SCOPES))
@@ -143,13 +153,24 @@ def build_materialize_command(
             list[str] | None,
             typer.Option("--scope", help="Materialization scope(s) to include (repeatable)."),
         ] = None,
+        from_file: Annotated[
+            Path | None,
+            typer.Option(
+                "--from",
+                help=(
+                    "Copy only the packaged options this authored YAML transitively "
+                    "selects (searching its directory, the local tree, then packaged "
+                    "defaults). Local-only options are skipped."
+                ),
+            ),
+        ] = None,
         destination: Annotated[
             Path,
             typer.Option("--dest", "--destination", help="Target local config directory."),
         ] = default_dest,
-        overwrite: Annotated[
+        clobber: Annotated[
             bool,
-            typer.Option("--overwrite", help="Overwrite existing local config files."),
+            clobber_option(help="Overwrite existing local config files."),
         ] = False,
         dry_run: Annotated[
             bool,
@@ -157,19 +178,31 @@ def build_materialize_command(
         ] = False,
     ) -> None:
         from honbu.materialize import (
+            MaterializationRoot,
+            MaterializationScope,
             apply_materialization,
             plan_materialization,
             render_plan,
         )
 
         with exit_on_refusal(prog=prog):
+            selected = list(scope or ())
+            all_scopes: dict[str, Any] = dict(scopes)
+            if from_file is not None:
+                # An ad-hoc scope holding just this root, under a name no project
+                # scope can collide with. Without --scope it replaces the defaults.
+                from_name = "--from"
+                all_scopes[from_name] = MaterializationScope(
+                    from_name, roots=(MaterializationRoot.from_file(from_file),)
+                )
+                selected.append(from_name)
             plan = plan_materialization(
                 destination,
                 compose_spec=spec,
-                scopes=scopes,
-                selected=tuple(scope or ()),
+                scopes=all_scopes,
+                selected=tuple(selected),
                 defaults=tuple(defaults),
-                overwrite=overwrite,
+                overwrite=clobber,
                 packaged_root=packaged_root,
             )
             if not dry_run:
@@ -177,6 +210,12 @@ def build_materialize_command(
             typer.echo(render_plan(plan))
 
     return materialize_cmd
+
+
+#: Operand designators accepted by :func:`build_compare_command`. The ``@`` keeps
+#: them from colliding with a configuration file named ``default.yaml``.
+DEFAULT_OPERAND = "@default"
+PACKAGED_OPERAND = "@packaged"
 
 
 def build_compare_command(
@@ -190,6 +229,20 @@ def build_compare_command(
     prog: str | None = None,
 ) -> Callable[..., None]:
     """Build a mountable Typer command for N-way config comparison (D26).
+
+    Takes two or more operands, each one of:
+
+    * ``@default`` — the project's default root (local shadowing packaged);
+    * ``@packaged`` / ``@packaged:<name>`` — shipped defaults only, ignoring
+      ``./configs``, optionally a named packaged root;
+    * a run directory — its ``resolved.yaml`` (or ``composed.yaml`` with
+      ``--composed``);
+    * a configuration name or path, resolved forgivingly by
+      :func:`~honbu.cli.resolve_positional_config`.
+
+    ``key=value`` overrides apply to the operand they follow, so
+    ``compare @default @default epochs=50`` reports what the override changes.
+    ``--config-dir`` overlays apply to ``@default`` and configuration files.
 
     Mount under whatever command name the project chooses::
 
@@ -205,13 +258,16 @@ def build_compare_command(
 
     def compare_cmd(
         ctx: typer.Context,
-        left: Annotated[
-            str,
-            typer.Argument(help="First operand: 'default', or a YAML file / run directory path."),
-        ],
-        right: Annotated[
-            str,
-            typer.Argument(help="Second operand: 'default', or a YAML file / run directory path."),
+        operands: Annotated[
+            list[str],
+            typer.Argument(
+                help=(
+                    "Two or more operands: @default, @packaged, @packaged:<name>, a run "
+                    "directory, or a config name/path; key=value overrides apply to "
+                    "the operand they follow."
+                ),
+                show_default=False,
+            ),
         ],
         level: Annotated[
             str,
@@ -225,23 +281,81 @@ def build_compare_command(
             bool,
             typer.Option("--composed", help="Read composed.yaml instead of resolved.yaml for run dirs."),
         ] = False,
+        config_dir: ConfigDirsOpt = None,
     ) -> None:
+        from honbu.cli.helpers import _is_run_dir, resolve_positional_config
         from honbu.compare import ConfigOperand, compare_operands, render_comparison
+        from honbu.errors import RefusalError
 
-        def _to_operand(ref: str, overrides: tuple[str, ...] = ()) -> ConfigOperand:
-            if ref == "default":
-                return ConfigOperand(source="default", overrides=overrides, label="default")
+        extra = tuple(config_dir or ())
+
+        def _to_operand(ref: str, overrides: tuple[str, ...]) -> ConfigOperand:
+            if ref == DEFAULT_OPERAND:
+                return ConfigOperand(
+                    source="default", overrides=overrides, extra_dirs=extra, label=ref
+                )
+            if ref == PACKAGED_OPERAND or ref.startswith(f"{PACKAGED_OPERAND}:"):
+                raw_name = ref.partition(":")[2] if ":" in ref else None
+                name = raw_name.removesuffix(".yaml") if raw_name is not None else None
+                if name is not None and not name.strip():
+                    raise RefusalError(
+                        f"{ref!r} names no packaged root; use {PACKAGED_OPERAND}:<name>"
+                    )
+                return ConfigOperand(
+                    source="packaged", config_name=name, overrides=overrides, label=ref
+                )
+            if ref.startswith("@"):
+                raise RefusalError(
+                    f"unknown operand designator {ref!r}; use {DEFAULT_OPERAND}, "
+                    f"{PACKAGED_OPERAND}, or {PACKAGED_OPERAND}:<name>"
+                )
             path = Path(ref)
-            if path.is_dir():
-                source = "composed" if composed else "resolved"
-                return ConfigOperand(source=source, reference=path, overrides=overrides, label=ref)
-            return ConfigOperand(source="file", reference=path, overrides=overrides, label=ref)
+            if _is_run_dir(path.resolve()):
+                return ConfigOperand(
+                    source="composed" if composed else "resolved",
+                    reference=path,
+                    overrides=overrides,
+                    label=ref,
+                )
+            try:
+                located = resolve_positional_config(
+                    ref, compose_spec=spec, extra_dirs=extra, reject_run_dir=False
+                )
+            except RefusalError as exc:
+                if ref in {"default", "packaged"}:
+                    raise RefusalError(f"{exc}\nDid you mean @{ref}?") from None
+                raise
+            return ConfigOperand(
+                source="file",
+                reference=located,
+                overrides=overrides,
+                extra_dirs=extra,
+                label=ref,
+            )
 
         with exit_on_refusal(prog=prog):
-            overrides = validate_override_tokens(ctx.args)
-            operands = (_to_operand(left), _to_operand(right, overrides=overrides))
+            # Typer collects every positional (overrides included) into operands;
+            # anything Click left over (unknown options) joins them so the dash
+            # rule refuses it.
+            tokens = [*operands, *ctx.args]
+            split_dash_rule(tokens)
+            groups: list[tuple[str, list[str]]] = []
+            for token in tokens:
+                if "=" in token or token.startswith("~"):
+                    if not groups:
+                        raise RefusalError(
+                            f"override {token!r} precedes every operand; overrides "
+                            "apply to the operand they follow"
+                        )
+                    groups[-1][1].append(token)
+                else:
+                    groups.append((token, []))
+            if len(groups) < 2:
+                raise RefusalError("configuration comparison needs at least two operands")
+            for _, group_overrides in groups:
+                validate_override_tokens(group_overrides)
             result = compare_operands(
-                operands,
+                tuple(_to_operand(ref, tuple(ovr)) for ref, ovr in groups),
                 compose_spec=spec,
                 level=level,  # type: ignore[arg-type]
                 root_type=root,

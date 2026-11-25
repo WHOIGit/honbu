@@ -66,7 +66,7 @@ exists to remove.
 
 ::: honbu.cli.helpers
     options:
-      members: [CONVENTIONAL_FLAGS, DashRuleSplit, split_dash_rule, validate_override_tokens, select_config_source, exit_on_refusal, emit_warnings]
+      members: [CONVENTIONAL_FLAGS, DashRuleSplit, split_dash_rule, validate_override_tokens, select_config_source, resolve_positional_config, exit_on_refusal, emit_warnings]
 
 ::: honbu.cli.presets
     options:

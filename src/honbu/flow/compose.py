@@ -75,6 +75,32 @@ def build_search_path(
     separately, and a project driving Hydra itself needs exactly this ordering to
     stay consistent with one that does not.
     """
+    found = search_dirs(spec, extra_dirs, cwd=cwd)
+    if not found:
+        if spec.local is not None:
+            raise RefusalError(
+                f"no configuration directory found: neither ./{spec.local} nor packaged "
+                "defaults are available"
+            )
+        raise RefusalError(
+            "no configuration directory found: no local directory configured and no "
+            "packaged defaults are available"
+        )
+    return found
+
+
+def search_dirs(
+    spec: ComposeSpec,
+    extra_dirs: Sequence[Path | str] = (),
+    *,
+    cwd: Path | None = None,
+) -> tuple[Path, ...]:
+    """Like :func:`build_search_path`, but an empty result is not a refusal.
+
+    A nonexistent explicit ``extra_dirs`` entry still refuses; only the absence of
+    a local tree and packaged defaults is tolerated. File roots and positional
+    config lookup use this because their primary directory comes from elsewhere.
+    """
     base = (cwd or Path.cwd()).resolve()
     found: list[Path] = []
 
@@ -92,18 +118,7 @@ def build_search_path(
 
     if spec.packaged is not None:
         found.append(_packaged_dir(spec.packaged))
-
-    if not found:
-        if spec.local is not None:
-            raise RefusalError(
-                f"no configuration directory found: neither ./{spec.local} nor packaged "
-                "defaults are available"
-            )
-        raise RefusalError(
-            "no configuration directory found: no local directory configured and no "
-            "packaged defaults are available"
-        )
-    return tuple(found)
+    return tuple(dict.fromkeys(found))
 
 
 def compose_file(
@@ -111,24 +126,59 @@ def compose_file(
     *,
     overrides: Sequence[str] = (),
     extra_dirs: Sequence[Path | str] = (),
+    compose_spec: ComposeSpec | None = None,
+    cwd: Path | None = None,
 ) -> dict[str, Any]:
     """Compose an arbitrary configuration file, with overrides.
 
-    Uses the file's own directory as the search path and its stem as the config
-    name, so the compositor applies overrides to it exactly as it would to the
-    default root. That is what lets authored files and prior run bundles compose
-    with overrides identically to the default root rather than using a weaker
-    second override mechanism.
+    Uses the file's own directory as the primary search directory and its stem as
+    the config name, so the compositor applies overrides to it exactly as it would
+    to the default root. That is what lets authored files and prior run bundles
+    compose with overrides identically to the default root rather than using a
+    weaker second override mechanism.
+
+    With ``compose_spec``, the project's search path falls in behind the file's
+    directory — ``[target.parent, *extra_dirs, local, packaged]`` — so a
+    standalone authored root can select packaged groups that were never
+    materialized locally. Without it the file is self-contained, which is what
+    prior-run snapshots (``resolved`` and ``fork``) want.
     """
+    return compose_file_with_choices(
+        path,
+        overrides=overrides,
+        extra_dirs=extra_dirs,
+        compose_spec=compose_spec,
+        cwd=cwd,
+    ).config
+
+
+def compose_file_with_choices(
+    path: Path | str,
+    *,
+    overrides: Sequence[str] = (),
+    extra_dirs: Sequence[Path | str] = (),
+    compose_spec: ComposeSpec | None = None,
+    cwd: Path | None = None,
+) -> Composition:
+    """:func:`compose_file`, retaining the compositor's selected group options."""
     target = Path(path).resolve()
     if not target.is_file():
         raise RefusalError(f"configuration file does not exist: {target}")
-    spec = ComposeSpec(packaged=None, local=str(target.parent), config_name=target.stem)
-    return compose_config(
-        spec,
+    fallback = (
+        search_dirs(compose_spec, extra_dirs, cwd=cwd)
+        if compose_spec is not None
+        else search_dirs(
+            ComposeSpec(packaged=None, local=None), extra_dirs, cwd=cwd
+        )
+    )
+    # The file's own directory leads so it is always the primary, even when a
+    # fallback directory happens to hold a file of the same name.
+    ordered = tuple(dict.fromkeys((target.parent, *fallback)))
+    return compose_with_choices(
+        ComposeSpec(packaged=None, local=None, config_name=target.stem),
         overrides=overrides,
-        extra_dirs=extra_dirs,
-        cwd=target.parent.parent or Path("."),
+        extra_dirs=ordered,
+        cwd=cwd,
     )
 
 

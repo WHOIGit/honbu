@@ -1010,3 +1010,61 @@ def test_parameterized_config_hash_name_and_parent_record_artifact_key(tmp_path)
     rec_best = parent_record(run_dir, artifact="best", command=cmd, project=project)
     assert rec_best["artifact_key"] == "best"
     assert rec_best["artifact"] == "checkpoints/best.pt"
+
+
+# --------------------------------------------------------------------------- #
+# opt-in config/cli.txt
+# --------------------------------------------------------------------------- #
+
+
+def test_cli_txt_is_not_written_by_default(tmp_path):
+    with _open(tmp_path, argv="train epochs=5") as run:
+        assert not (run.config_dir / "cli.txt").exists()
+
+
+def test_cli_txt_is_written_atomically_when_opted_in(tmp_path):
+    with _open(tmp_path, argv="train data=nes-hf", write_cli_txt=True) as run:
+        cli = run.config_dir / "cli.txt"
+        # Present before work starts, beside the rest of the bundle.
+        assert cli.read_text() == "train data=nes-hf\n"
+        assert (run.config_dir / "composed.yaml").is_file()
+    assert not list(run.config_dir.glob("*.tmp"))
+
+
+def test_cli_txt_is_omitted_for_empty_argv(tmp_path):
+    with _open(tmp_path, argv="   ", write_cli_txt=True) as run:
+        assert not (run.config_dir / "cli.txt").exists()
+
+
+def test_cli_txt_defaults_from_the_project_and_explicit_false_wins(tmp_path):
+    project = ProjectSpec(
+        root_type=Root, compose_spec=ComposeSpec(), hashes=HASHES, write_cli_txt=True
+    )
+    assert (
+        ProjectSpec(root_type=Root, compose_spec=ComposeSpec(), hashes=HASHES).write_cli_txt
+        is False
+    )
+    with _open(tmp_path, argv="train", project=project) as run:
+        assert (run.config_dir / "cli.txt").read_text() == "train\n"
+
+    other = tmp_path / "other"
+    other.mkdir()
+    with _open(other, argv="train", project=project, write_cli_txt=False) as run:
+        assert not (run.config_dir / "cli.txt").exists()
+
+
+def test_cli_txt_keeps_the_invocation_that_produced_each_configuration(tmp_path):
+    with _open(tmp_path, argv="train", write_cli_txt=True) as first:
+        run_dir = first.run_dir
+    with _open(
+        tmp_path, command=EVAL, existing_target=run_dir, argv="eval", write_cli_txt=True
+    ):
+        pass
+    assert (run_dir / "config" / "cli.txt").read_text() == "train\n"
+
+    overridden = {**COMPOSED, "epochs": 50}
+    with _open(
+        tmp_path, overridden, command=EVAL, existing_target=run_dir,
+        argv="eval epochs=50", write_cli_txt=True,
+    ) as second:
+        assert (second.config_dir / "cli.txt").read_text() == "eval epochs=50\n"

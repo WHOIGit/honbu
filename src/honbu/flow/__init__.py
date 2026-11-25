@@ -43,6 +43,7 @@ from honbu.flow.manifest import RESERVED_EVENTS, Manifest, RunState
 from honbu.flow.project import ProjectSpec
 from honbu.flow.resolve import Resolution, anchor, resolve, strip_resolved_only
 from honbu.flow.run import (
+    CLI_TXT_NAME,
     COMPOSED_NAME,
     CONFIG_DIRNAME,
     RESOLVED_NAME,
@@ -57,6 +58,7 @@ from honbu.flow.run import (
 
 __all__ = [
     "ALL_CONFIG_SOURCES",
+    "CLI_TXT_NAME",
     "COMPOSED_NAME",
     "CONFIG_DIRNAME",
     "RESERVED_EVENTS",

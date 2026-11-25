@@ -48,7 +48,12 @@ cannot forge a state it did not reach.
 config/composed.yaml         what was authored, portable
 config/resolved.yaml         what ran, absolute
 config/hashes/<name>.json    one artifact per digest
+config/cli.txt               opt-in: the command line that produced this configuration
 ```
+
+`cli.txt` is written only when `write_cli_txt=True` (on `open_run` or
+`ProjectSpec`) and `argv_text` is non-empty, so Honbu stays the single writer of
+`config/`.
 
 The bundle is written before your handler is called, so a run that dies immediately
 still says what it was going to do.

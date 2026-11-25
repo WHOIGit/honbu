@@ -62,7 +62,7 @@ Exactly one source is in play per invocation, declared per command:
 | Source | Conventional flag | Gives you |
 | --- | --- | --- |
 | `default` | *(none)* | composed from the search path |
-| `file` | `--config x.yaml` | that file, composed with its own directory as the search path |
+| `file` | `--config x.yaml` | that file, searching its own directory, then `--config-dir`, `./configs`, and packaged defaults |
 | `resolved` | `--resolved <run>` | a prior run's resolved configuration — a replay, landing in that same run |
 | `fork` | `--fork-from <run>` | a prior run's *authored* configuration, as a new run with recorded lineage |
 

@@ -20,8 +20,11 @@ comparison = compare_operands(
 print(render_comparison(comparison))
 ```
 
-An operand names any of the four sources — `default`, `file`, `composed` (a run's
-authored `config/composed.yaml`), or `resolved` (a run's `config/resolved.yaml`) —
+An operand names one of the sources — `default`, `packaged` (the shipped defaults
+only, ignoring `./configs`; set `config_name` for a named packaged root), `file`
+(an authored file, backed by the project search path so it can select packaged
+groups never copied locally), `composed` (a run's authored
+`config/composed.yaml`), or `resolved` (a run's `config/resolved.yaml`) —
 optionally with its own `overrides`, `extra_dirs`, and `config_index`. Comparison is
 N-way, so three runs and a baseline is one call.
 
@@ -106,5 +109,27 @@ project-shaped. If you want a ready-made Typer config-diff command, mount
 ```python
 from honbu.cli.presets import build_compare_command
 
-APP.command("compare")(build_compare_command(project=PROJECT, default_level="behavioral"))
+APP.command("compare", context_settings=HYDRA_CONTEXT_SETTINGS)(
+    build_compare_command(project=PROJECT, default_level="behavioral")
+)
+```
+
+It takes two or more operands:
+
+| Operand | Means |
+| --- | --- |
+| `@default` | the default root (local shadowing packaged) |
+| `@packaged` | the shipped default root, ignoring `./configs` |
+| `@packaged:<name>` | a named shipped root, such as `@packaged:configA` |
+| a run directory | its `resolved.yaml` (or `composed.yaml` with `--composed`) |
+| anything else | a config name or path, found by `resolve_positional_config` |
+
+The `@` keeps designators from colliding with a file named `default.yaml`.
+`key=value` overrides apply to the operand they follow, and `--config-dir` overlays
+apply to `@default` and configuration files:
+
+```bash
+yourproject compare @packaged @default            # what has the local tree changed?
+yourproject compare @default @default epochs=50   # what does the override change?
+yourproject compare configA @packaged:configA runs/reef/polite-cricket
 ```

@@ -20,7 +20,12 @@ from typing import TYPE_CHECKING, Literal
 
 from honbu.core.canonical import file_digest
 from honbu.errors import DeclarationError, RefusalError
-from honbu.flow.compose import ComposeSpec, _packaged_dir, compose_with_choices
+from honbu.flow.compose import (
+    ComposeSpec,
+    _packaged_dir,
+    compose_file_with_choices,
+    compose_with_choices,
+)
 from honbu.flow.project import ProjectSpec
 
 if TYPE_CHECKING:
@@ -189,22 +194,20 @@ def closure_for_root(
     """Return one root's transitive packaged config closure.
 
     Asks Hydra for its selected options rather than re-parsing YAML defaults lists.
-    For an external authored file (:meth:`MaterializationRoot.from_file`), returns
-    only its packaged dependencies so the authored file stays in place.
+    For an authored file (:meth:`MaterializationRoot.from_file`), composes over
+    ``[target.parent, local, packaged]`` and returns only the selected group
+    options, so the authored file stays in place; options that exist only locally
+    are dropped later by :func:`plan_materialization`.
     """
     if root.file_path is not None:
-        target = root.file_path.resolve()
-        if not target.is_file():
-            raise RefusalError(f"configuration file does not exist: {target}")
-        base_spec = (
-            ComposeSpec(packaged=compose_spec.packaged, local=None, config_name=target.stem)
-            if compose_spec.packaged is not None
-            else ComposeSpec(packaged=None, local=compose_spec.local, config_name=target.stem)
-        )
-        composition = compose_with_choices(
-            base_spec,
+        # Search [target.parent, local, packaged]: an edited local group file (or a
+        # child it pulls in) is honored transitively, so the closure names exactly
+        # the packaged options that local edits now select. Entries resolving only
+        # to local-only files are filtered by plan_materialization.
+        composition = compose_file_with_choices(
+            root.file_path,
             overrides=root.overrides,
-            extra_dirs=(target.parent,),
+            compose_spec=compose_spec,
             cwd=cwd,
         )
         return closure_roots(
@@ -302,6 +305,10 @@ def plan_materialization(
                     continue
                 source = pkg_root / relative
                 if not source.is_file():
+                    if root_obj.file_path is not None:
+                        # A local-only option the user authored: nothing packaged
+                        # to copy, and nothing wrong with it.
+                        continue
                     raise DeclarationError(
                         f"scope {name!r} closure names no packaged file: {relative}"
                     )

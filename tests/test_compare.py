@@ -255,3 +255,86 @@ def test_group_fragment_refuses_marker_defined_comparison(tmp_path):
             root_type=Root,
             cwd=tmp_path,
         )
+
+
+# --------------------------------------------------------------------------- #
+# packaged operands and file operands backed by the search path
+# --------------------------------------------------------------------------- #
+
+
+def _packaged_with_local_shadow(tmp_path, monkeypatch, pkg_name):
+    pkg = tmp_path / pkg_name
+    (pkg / "model").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "config.yaml").write_text("defaults:\n  - _self_\n  - model: small\n")
+    (pkg / "configA.yaml").write_text("defaults:\n  - _self_\n  - model: large\n")
+    (pkg / "model" / "small.yaml").write_text("name: small\n")
+    (pkg / "model" / "large.yaml").write_text("name: large\n")
+    (tmp_path / "configs" / "model").mkdir(parents=True)
+    (tmp_path / "configs" / "model" / "small.yaml").write_text("name: local-small\n")
+    (tmp_path / "configs" / "config.yaml").write_text("defaults:\n  - _self_\n  - model: small\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    return ComposeSpec(packaged=pkg_name, local="configs")
+
+
+def test_packaged_operand_ignores_the_local_shadow(tmp_path, monkeypatch):
+    spec = _packaged_with_local_shadow(tmp_path, monkeypatch, "cmp_pkg")
+    result = compare_operands(
+        [ConfigOperand(source="packaged"), ConfigOperand(source="default")],
+        compose_spec=spec,
+        cwd=tmp_path,
+    )
+    assert [(d.path, d.values) for d in result.differences] == [
+        ("model.name", ("small", "local-small"))
+    ]
+
+
+def test_packaged_operand_with_config_name_selects_a_named_root(tmp_path, monkeypatch):
+    spec = _packaged_with_local_shadow(tmp_path, monkeypatch, "cmp_named_pkg")
+    result = compare_operands(
+        [
+            ConfigOperand(source="packaged", label="pkg"),
+            ConfigOperand(source="packaged", config_name="configA", label="pkgA"),
+            ConfigOperand(
+                source="packaged", config_name="configA", overrides=("model=small",)
+            ),
+        ],
+        compose_spec=spec,
+        cwd=tmp_path,
+    )
+    (difference,) = result.differences
+    # The override on a packaged root still resolves strictly packaged groups.
+    assert difference.values == ("small", "large", "small")
+
+
+def test_packaged_operand_refusals(tmp_path, monkeypatch):
+    spec = _packaged_with_local_shadow(tmp_path, monkeypatch, "cmp_refuse_pkg")
+    with pytest.raises(RefusalError, match="takes no reference"):
+        compare_operands(
+            [ConfigOperand(source="packaged", reference="x"), ConfigOperand()],
+            compose_spec=spec,
+        )
+    with pytest.raises(RefusalError, match="declares none"):
+        compare_operands(
+            [ConfigOperand(source="packaged"), ConfigOperand()],
+            compose_spec=ComposeSpec(packaged=None),
+        )
+    with pytest.raises(RefusalError, match="only to 'packaged'"):
+        compare_operands(
+            [ConfigOperand(source="default", config_name="configA"), ConfigOperand()],
+            compose_spec=spec,
+        )
+
+
+def test_file_operand_inherits_the_project_search_path(tmp_path, monkeypatch):
+    spec = _packaged_with_local_shadow(tmp_path, monkeypatch, "cmp_file_pkg")
+    (tmp_path / "studies").mkdir()
+    study = tmp_path / "studies" / "v1.yaml"
+    study.write_text("defaults:\n  - _self_\n  - model: large\n")
+    result = compare_operands(
+        [ConfigOperand(source="file", reference=study), ConfigOperand(source="packaged")],
+        compose_spec=spec,
+        cwd=tmp_path,
+    )
+    assert result.differences[0].values == ("large", "small")

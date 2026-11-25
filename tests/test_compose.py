@@ -418,3 +418,128 @@ def test_compose_file_resolves_a_relative_provenance_path(tmp_path, monkeypatch)
     (config / "resolved.yaml").write_text("epochs: 10\n")
     monkeypatch.chdir(tmp_path)
     assert compose_file(Path("run/config/resolved.yaml"))["epochs"] == 10
+
+
+# --------------------------------------------------------------------------- #
+# authored file roots inherit the project search path
+# --------------------------------------------------------------------------- #
+
+
+def _packaged_groups(root: Path, name: str) -> Path:
+    pkg = root / name
+    (pkg / "data").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "config.yaml").write_text(
+        "defaults:\n  - _self_\n  - data: local\nexperiment:\n  name: packaged\n"
+    )
+    (pkg / "data" / "local.yaml").write_text("uri: ./packaged-local\n")
+    (pkg / "data" / "remote.yaml").write_text("uri: s3://packaged-remote\n")
+    return pkg
+
+
+def _standalone_root(directory: Path, data: str = "remote") -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    root = directory / "configA.yaml"
+    root.write_text(
+        f"defaults:\n  - _self_\n  - data: {data}\nexperiment:\n  name: standalone\n"
+    )
+    return root
+
+
+def test_a_standalone_file_root_resolves_an_unmaterialized_packaged_group(
+    tmp_path, monkeypatch
+):
+    _packaged_groups(tmp_path, "fileroot_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    root = _standalone_root(tmp_path / "studies")
+    spec = ComposeSpec(packaged="fileroot_pkg")
+
+    # Self-contained (no spec): the packaged group is out of reach.
+    with pytest.raises(RefusalError, match="composition failed"):
+        compose_file(root)
+
+    composed = compose_file(root, compose_spec=spec, cwd=tmp_path)
+    assert composed["data"]["uri"] == "s3://packaged-remote"
+    assert composed["experiment"]["name"] == "standalone"
+
+    loaded = load_config(
+        "file", root, overrides=["data.uri=x"], compose_spec=spec, cwd=tmp_path
+    )
+    assert loaded.composed["data"]["uri"] == "x"
+
+
+def test_file_root_search_order_is_own_dir_then_extra_then_local_then_packaged(
+    tmp_path, monkeypatch
+):
+    _packaged_groups(tmp_path, "order_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    spec = ComposeSpec(packaged="order_pkg", local="configs")
+    (tmp_path / "configs" / "data").mkdir(parents=True)
+    (tmp_path / "configs" / "data" / "remote.yaml").write_text("uri: local-remote\n")
+    (tmp_path / "overlay" / "data").mkdir(parents=True)
+    root = _standalone_root(tmp_path / "studies")
+
+    # local shadows packaged
+    assert compose_file(root, compose_spec=spec, cwd=tmp_path)["data"]["uri"] == (
+        "local-remote"
+    )
+    # an explicit extra directory outranks local
+    (tmp_path / "overlay" / "data" / "remote.yaml").write_text("uri: overlay-remote\n")
+    assert compose_file(
+        root, compose_spec=spec, extra_dirs=["overlay"], cwd=tmp_path
+    )["data"]["uri"] == "overlay-remote"
+    # the file's own directory outranks everything
+    (tmp_path / "studies" / "data").mkdir()
+    (tmp_path / "studies" / "data" / "remote.yaml").write_text("uri: sibling-remote\n")
+    assert compose_file(
+        root, compose_spec=spec, extra_dirs=["overlay"], cwd=tmp_path
+    )["data"]["uri"] == "sibling-remote"
+
+
+def test_a_file_root_named_like_the_default_root_stays_primary(tmp_path, monkeypatch):
+    _packaged_groups(tmp_path, "primary_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    (tmp_path / "studies").mkdir()
+    authored = tmp_path / "studies" / "config.yaml"
+    authored.write_text("defaults:\n  - _self_\n  - data: remote\nexperiment:\n  name: mine\n")
+    composed = compose_file(
+        authored, compose_spec=ComposeSpec(packaged="primary_pkg"), cwd=tmp_path
+    )
+    assert composed["experiment"]["name"] == "mine"
+    assert composed["data"]["uri"] == "s3://packaged-remote"
+
+
+def test_file_root_tolerates_a_spec_with_no_directories(tmp_path):
+    root = tmp_path / "plain.yaml"
+    root.write_text("epochs: 3\n")
+    composed = compose_file(
+        root, compose_spec=ComposeSpec(packaged=None, local="configs"), cwd=tmp_path
+    )
+    assert composed == {"epochs": 3}
+
+
+def test_resolved_and_fork_snapshots_stay_self_contained(tmp_path, monkeypatch):
+    """A prior run's bundle never falls back to the project's search path."""
+    _packaged_groups(tmp_path, "snapshot_pkg")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    run_config = tmp_path / "runs" / "r1" / "config"
+    run_config.mkdir(parents=True)
+    # A (corrupted) snapshot still naming a group: resolving it through packaged
+    # defaults would silently change what is replayed.
+    (run_config / "resolved.yaml").write_text("defaults:\n  - data: remote\n")
+    (run_config / "composed.yaml").write_text("defaults:\n  - data: remote\n")
+
+    class Root(StrictModel):
+        experiment: ExperimentConfig
+        runtime: HashedRuntimeConfig = Field(default_factory=HashedRuntimeConfig)
+        output_root: PortablePath = Path("./runs")
+        outputs: OutputBlock = Field(default_factory=OutputBlock)
+
+    project = ProjectSpec(
+        root_type=Root,
+        compose_spec=ComposeSpec(packaged="snapshot_pkg"),
+        hashes=HashRegistry([FieldHash("config_hash", include=["experiment"])]),
+    )
+    for source in ("resolved", "fork"):
+        with pytest.raises(RefusalError, match="composition failed"):
+            load_config(source, tmp_path / "runs" / "r1", project=project, cwd=tmp_path)

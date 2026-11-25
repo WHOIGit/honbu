@@ -98,9 +98,9 @@ print(render_file_drift(file_drift))
 ## Mount as a Typer command
 
 If your CLI uses Typer, `honbu.cli.presets.build_materialize_command` returns a
-ready-made command function supporting `--scope`, `--dest`, `--overwrite`, and
-`--dry-run` that you can register under any name you choose (`init`, `config-init`,
-etc.):
+ready-made command function supporting `--scope`, `--from FILE`, `--dest`,
+`--clobber`, and `--dry-run` that you can register under any name you choose
+(`init`, `config-init`, etc.):
 
 ```python
 from honbu.cli.presets import build_materialize_command
@@ -113,6 +113,14 @@ APP.command("init")(
     )
 )
 ```
+
+`--from FILE` plans the closure of an authored file
+(`MaterializationRoot.from_file`) instead of the default scopes; combine it with
+`--scope` to plan both. The file composes over `[its directory, ./configs,
+packaged]`, so after editing a local config — or a group file it pulls in — to
+reference a packaged option you have not copied yet, `init --from
+configs/config.yaml` creates exactly that option, skips files already present, and
+silently ignores options that exist only locally.
 
 ## What it will not do
 

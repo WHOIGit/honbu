@@ -36,7 +36,7 @@ from honbu.flow.compose import (
 from honbu.flow.project import ProjectSpec
 
 ComparisonLevel = Literal["literal", "authored", "behavioral", "by_hash"]
-OperandSource = Literal["default", "file", "composed", "resolved"]
+OperandSource = Literal["default", "packaged", "file", "composed", "resolved"]
 
 
 class _Absent:
@@ -55,6 +55,9 @@ class ConfigOperand:
     ``fragment`` identifies a configuration-group file rather than a complete
     root. Such an operand deliberately supports literal comparison only: there
     is no root to validate or project through the marker schema.
+
+    ``config_name`` applies only to ``packaged`` operands, selecting a named
+    packaged root (``@packaged:<name>``) instead of the project's default one.
     """
 
     source: OperandSource = "default"
@@ -64,6 +67,7 @@ class ConfigOperand:
     config_index: int = 1
     label: str | None = None
     fragment: bool = False
+    config_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,9 +111,11 @@ def normalize_operand(
 ) -> dict[str, Any]:
     """Compose one declared operand to the mapping comparison operates on.
 
-    The source names cover the four configuration views: ``default``, ``file``,
-    ``composed`` (a prior run's ``composed.yaml``), and ``resolved`` (a prior
-    run's ``resolved.yaml``). Both ``composed`` and ``resolved`` accept a run
+    The source names cover the configuration views: ``default``, ``packaged``
+    (shipped defaults only, ignoring local shadows; optionally a named root via
+    ``config_name``), ``file`` (backed by the project search path), ``composed``
+    (a prior run's ``composed.yaml``), and ``resolved`` (a prior run's
+    ``resolved.yaml``). Both ``composed`` and ``resolved`` accept a run
     directory directly and honor ``operand.config_index``.
     """
     spec = (
@@ -117,6 +123,40 @@ def normalize_operand(
         if compose_spec is not None
         else (project.compose_spec if project is not None else None)
     )
+    if operand.config_name is not None and operand.source != "packaged":
+        raise RefusalError(
+            f"config_name applies only to 'packaged' comparison operands, not "
+            f"{operand.source!r}"
+        )
+    if operand.source == "packaged":
+        if operand.reference is not None:
+            raise RefusalError("a packaged comparison operand takes no reference")
+        if spec is None:
+            raise DeclarationError(
+                "normalizing a 'packaged' operand requires compose_spec or project"
+            )
+        if spec.packaged is None:
+            raise RefusalError(
+                "a packaged comparison operand needs packaged defaults, and this "
+                "project declares none"
+            )
+        # Strictly the shipped defaults: ./configs (local) is ignored entirely.
+        packaged_name = (
+            operand.config_name.removesuffix(".yaml")
+            if operand.config_name is not None
+            else spec.config_name
+        )
+        packaged_only = ComposeSpec(
+            packaged=spec.packaged,
+            local=None,
+            config_name=packaged_name,
+        )
+        return compose_config(
+            packaged_only,
+            overrides=operand.overrides,
+            extra_dirs=operand.extra_dirs,
+            cwd=cwd,
+        )
     if operand.source == "default":
         if operand.reference is not None:
             raise RefusalError("a default comparison operand takes no reference")
@@ -137,8 +177,13 @@ def normalize_operand(
 
     reference = Path(operand.reference)
     if operand.source == "file":
+        # Like load_config("file"): the project's search path backs the file.
         return compose_file(
-            reference, overrides=operand.overrides, extra_dirs=operand.extra_dirs
+            reference,
+            overrides=operand.overrides,
+            extra_dirs=operand.extra_dirs,
+            compose_spec=spec,
+            cwd=cwd,
         )
     if operand.source == "resolved":
         path = (
