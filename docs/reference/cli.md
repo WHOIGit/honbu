@@ -43,8 +43,8 @@ packaged default counts once. No match refuses with a hint about `key=value` and
 `-c`/`--config`; a run directory refuses pointing at `--resolved` or `--fork-from`.
 
 For non-Typer CLIs (Click, `argparse`, or manual argv handling), `split_dash_rule`
-splits raw argv tokens into leading flags/options and trailing overrides using the
-dash rule.
+refuses unknown dash-prefixed tokens and partitions trailing dash-free tokens into
+`positionals` and `overrides` (`DashRuleSplit`).
 
 ## Override grammar
 

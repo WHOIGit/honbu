@@ -51,20 +51,23 @@ rather than a no-op, which is the whole reason the schema is strict.
 
     Honbu's refusal for this case names the exact quoting to use.
 
-## The two views
+## Composed vs. resolved, and the two resolved views
 
-Resolution produces the same configuration twice.
+A run persists two configuration files before your handler is called, so even a run
+that dies in its first minute records what it was going to do:
 
-**Portable** (`config/composed.yaml`) is what you authored, with paths relative.
-It is what a colleague can read, what a second machine can run, and what a
-continued run builds on.
+- **`config/composed.yaml`** — what you authored before resolution, with relative
+  input paths and unrendered templates intact. `--fork-from` builds on this file so a
+  forked run re-resolves cleanly on another machine.
+- **`config/resolved.yaml`** — the **portable resolved view** (`resolution.portable`):
+  every identity and digest is filled in, while bare-relative output directories and
+  leaves stay relative so moving a `runs/` tree keeps working. `--resolved` replays
+  this file.
 
-**Absolute** (`config/resolved.yaml`) is what actually ran, with every path
-absolute and every identity filled in. It is what a replay re-enters, and it is
-correct only on the machine that produced it.
-
-Both are written into the run before your handler is called. That is what lets a
-run that crashed in its first minute still say what it was going to do.
+In memory, your handler reads **`run.config`** — the **absolute resolved view**
+(`resolution.config`), of the same Pydantic type, with every output path joined to
+`output_root` so your code can open paths directly without manual joining. Both views
+produce identical digests.
 
 ## The resolution order is fixed
 

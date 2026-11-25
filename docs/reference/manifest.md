@@ -45,8 +45,8 @@ cannot forge a state it did not reach.
 ## What is beside it
 
 ```text
-config/composed.yaml         what was authored, portable
-config/resolved.yaml         what ran, absolute
+config/composed.yaml         what was authored, before resolution
+config/resolved.yaml         resolved, portable view
 config/hashes/<name>.json    one artifact per digest
 config/cli.txt               opt-in: the command line that produced this configuration
 ```

@@ -6,25 +6,10 @@ build-backend = "hatchling.build"
 name = "honbu"
 version = "0.1.0.dev0"
 description = "Honbu: the shared foundation for config-driven, content-addressed training projects"
+readme = "README.md"
 authors = [{ name = "Sidney Batchelder", email = "sbatchelder@whoi.edu" }]
 license = "MIT"
 requires-python = ">=3.12"
-# One install carries every layer (D20). A project opts out of a layer by not
-# importing it, not by selecting an extra.
-#
-# The accepted cost: hydra-core -> omegaconf -> antlr4-python3-runtime==4.9.*, an
-# exact pin on a 2021 release that every consumer now inherits. Accepted because
-# the alternative failed in a worse place — three lazy-import branches whose only
-# job was to say "install the flow extra", firing during someone's first command,
-# plus an extras matrix presented at adoption time to the person least equipped to
-# choose. Since installation no longer enforces the layering, a test does: no
-# module under core/ may import hydra, omegaconf, yaml or typer, and neither
-# flow/ nor cli/ top-level may import typer (only cli/presets imports typer).
-#
-# Nothing here depends on a training engine, a data format, or a metric.
-#
-# Typer is included for opt-in CLI presets (honbu.cli.presets, D19/D20); projects
-# own their CLI surface and may skip honbu.cli.presets completely.
 dependencies = [
     "pydantic>=2.7",
     "coolname>=5",
@@ -35,12 +20,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Genuine execution backends stay optional: they are substitutable infrastructure
-# Honbu adapts to, not capabilities it implements. Both are used as libraries
-# rather than through Hydra's plugin interfaces — see D22. Sequential local
-# execution needs neither.
 slurm = ["submitit>=1.5"]
-search = ["optuna>=3.6"]
+optuna = ["optuna>=3.6"]
 docs = [
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.25",
@@ -52,6 +33,10 @@ dev = [
     "ruff>=0.5",
 ]
 
+[project.urls]
+Homepage = "https://github.com/WHOIGit/honbu"
+Repository = "https://github.com/WHOIGit/honbu"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/honbu"]
 
@@ -61,7 +46,4 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# The documentation's code samples are quoted from `examples/linefit`, and the
-# suite runs that project end to end. A sample cannot drift from working code
-# because a renamed API fails here first.
 pythonpath = [".", "examples"]

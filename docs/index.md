@@ -27,11 +27,12 @@ keeping its own CLI parser, if it has one it likes.
 ## Install
 
 ```bash
-pip install honbu
+pip install "honbu @ git+https://github.com/WHOIGit/honbu.git"
 ```
 
-One install carries every layer. A project opts out of a layer by not importing it,
-not by choosing an extra:
+Optional execution backends are available as `honbu[slurm]` (`submitit`) and
+`honbu[optuna]` (`optuna`). One install carries every framework layer. A project opts
+out of a layer by not importing it, not by choosing an extra:
 
 | Layer | Import | What it gives you |
 | --- | --- | --- |
@@ -48,7 +49,7 @@ reaches up.
 <div class="grid cards" markdown>
 
 - **New here** — the [tutorial](tutorial.md) takes an empty directory to a completed,
-  resumable run in nine steps.
+  resumable run in ten steps.
 - **Doing a specific thing** — the [how-to guides](how-to/configure.md) are
   task-shaped: declare a hash, register a command, retype your paths, run a sweep.
 - **Adopting an existing project** — start at [Adopt an existing
@@ -64,6 +65,6 @@ reaches up.
 !!! note "Every sample here is executed"
 
     The code in these pages is quoted from
-    [`examples/linefit/project.py`](https://github.com/sbatchelder/honbu/blob/main/examples/linefit/project.py),
+    [`examples/linefit/project.py`](https://github.com/WHOIGit/honbu/blob/main/examples/linefit/project.py),
     a complete project the test suite runs end to end. If an API is renamed, that
     suite fails before these pages can mislead you.

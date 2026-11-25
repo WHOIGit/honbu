@@ -22,7 +22,7 @@ intact. Swallowing it would trade a diagnosable crash for a mystery.
 | Interrupt | 130 | `interrupted` |
 
 Wrap your CLI entrypoint body in `with exit_on_refusal(prog="yourproject"):` from
-`honbu.cli` to get all three behaviors automatically, with an optional `on_refusal`
+`honbu.cli` to get all three behaviors automatically, with an optional `on_error`
 hook if you want custom or structured output.
 
 ## A refusal names the fix

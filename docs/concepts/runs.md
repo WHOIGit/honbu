@@ -7,8 +7,8 @@ writes it.
 runs/linefit/dynamic-macaw/
 ├── manifest.json        # the live record
 ├── config/
-│   ├── composed.yaml    # authored, portable
-│   ├── resolved.yaml    # resolved, absolute
+│   ├── composed.yaml    # authored, before resolution
+│   ├── resolved.yaml    # resolved, portable view
 │   ├── cli.txt          # opt-in: the producing command line
 │   └── hashes/          # one artifact per digest
 ├── checkpoints/         # yours

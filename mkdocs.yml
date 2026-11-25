@@ -1,6 +1,6 @@
 site_name: Honbu
 site_description: The shared foundation for configuration-driven, content-addressed training projects
-repo_url: https://github.com/sbatchelder/honbu
+repo_url: https://github.com/WHOIGit/honbu
 
 theme:
   name: material

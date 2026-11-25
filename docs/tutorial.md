@@ -5,13 +5,13 @@ configuration, gives every run an identity, writes it somewhere safe, records wh
 produced it, and resumes where it died. It fits a line to points, so that nothing
 on this page is about machine learning and everything is about Honbu.
 
-The finished project is [`examples/linefit`](https://github.com/sbatchelder/honbu/blob/main/examples/linefit),
+The finished project is [`examples/linefit`](https://github.com/WHOIGit/honbu/blob/main/examples/linefit),
 and every block below is quoted from it.
 
 ## 1. Install
 
 ```bash
-pip install honbu
+pip install "honbu @ git+https://github.com/WHOIGit/honbu.git"
 ```
 
 ## 2. Lay out the project
@@ -49,10 +49,10 @@ configuration groups and hash declarations address one namespace.
 Three things are doing real work here:
 
 `PortablePath`
-:   Marks a field as a filesystem path. Marked paths are stored absolute in the
-    resolved configuration and relative in the portable one, and they are excluded
-    from every digest — so moving the project to another machine does not change
-    what a run *is*. See [Retype paths](how-to/paths.md).
+:   Marks a field as a filesystem path. Marked paths are absolute in `run.config`
+    (the in-memory view), stay portable on disk, and are excluded from every digest —
+    so moving the project to another machine does not change what a run *is*. See
+    [Retype paths](how-to/paths.md).
 
 `HashedRuntimeConfig`
 :   An opt-in subclass of `RuntimeConfig` pre-wired with `config_hash` (`DERIVED`
@@ -111,8 +111,8 @@ python -m linefit.project train
 runs/linefit/dynamic-macaw/
 ├── manifest.json
 ├── config/
-│   ├── composed.yaml      # what you authored, portable
-│   ├── resolved.yaml      # what ran, absolute
+│   ├── composed.yaml      # what you authored, before resolution
+│   ├── resolved.yaml      # resolved portable view (relative outputs, assigned identities)
 │   └── hashes/            # one artifact per digest
 └── checkpoints/line.json
 ```

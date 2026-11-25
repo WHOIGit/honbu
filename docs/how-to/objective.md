@@ -18,7 +18,9 @@ run.record_artifact("checkpoint", checkpoint)       # a file that matters later
 ```
 
 `record_progress`
-:   Overwritten as it goes. It answers "is this still moving?" for a run in flight.
+:   Incrementally merges keys into `manifest["progress"]` as a run advances (use
+    `run.set_progress(...)` to replace the mapping wholesale). It answers "is this
+    still moving?" for a run in flight.
 
 `record_best`
 :   The result. Record it whenever the best changes, or once at the end — the

@@ -23,7 +23,7 @@ sanitizing one would strip its leading separator.
 | --- | --- | --- |
 | `timestamp` | no | local invocation time |
 | `timestamp_utc` | no | UTC invocation time |
-| `coolname` | yes | a deterministic human-readable name for a digest |
+| `coolname` | optional | `{:coolname}` mints a fresh name per invocation; `{path:coolname}` mints a deterministic name for a digest |
 | `slug` | yes | a filesystem-safe form of the value |
 | `command` | no | the invoked command's name |
 | `source_run_dir` | no | the run named by `--resolved` or `--fork-from` |

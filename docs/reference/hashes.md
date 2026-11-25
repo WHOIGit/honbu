@@ -4,9 +4,9 @@
 
 | Form | Constructor | Covers |
 | --- | --- | --- |
-| Field | `FieldHash(name, include=(...), version=...)` | named subtrees of the configuration |
+| Field | `FieldHash(name, include=..., exclude=(), version=...)` | named subtrees (sequence or per-command mapping) |
 | Source | `SourceHash(name, build=..., reads_inputs=False)` | a mapping you build |
-| Byte | `ByteHash(name, ...)` | bytes you supply |
+| Byte | `ByteHash(name, locate=...)` | bytes of a file returned by `locate(inputs)` |
 | Fanned | `FannedHash(name, ...)` | one entry per key of a mapping |
 
 ## The registry

@@ -30,7 +30,7 @@ Your CLI callback loads the configuration, resolves it, and opens a live `Run`:
 | `target` | which fields hold the output template, the resolved directory, and the root |
 | `hashes` | which declared digests this command computes |
 | `steps` | the units of "do not do this again" |
-| `completion_steps` | which steps satisfy completion (defaults to all `steps`) |
+| `completion` | which steps satisfy completion (defaults to all `steps`) |
 | `scope` | for an augmenting command, the output leaves it may replace |
 | `config_sources` | which of `default`, `file`, `resolved`, `fork` it accepts |
 | `advances_run` | whether finishing moves the run's state |
@@ -86,8 +86,11 @@ that was interrupted runs again. Declaring a step per epoch is usually wrong —
 boundary is a promise the work either happened or did not, and fine-grained promises
 are harder to keep than the repetition costs.
 
-`StepSpec` takes `on_resume="restart"` for a step that must always re-run (a cheap
-setup step, say) and a `scope` for one that owns particular output leaves.
+`StepSpec` takes `on_resume="restart"` for a step whose partial output from an
+interrupted or failed run is spoiled work and should be cleared before retrying
+(completed steps are still skipped via `run.skip()`), vs. the default `"continue"`
+for steps whose prior output (such as checkpoints) is resume state. Pass `scope` to
+name the output leaves a restarting step owns.
 
 On `--resume`, Honbu preserves the recorded `run_id` when not explicitly overridden
 and refuses behavioral `config_hash` drift by default (`allow_config_drift=False`),

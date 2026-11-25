@@ -115,8 +115,9 @@ scheme.
 
 **Some of your configuration will turn out not to be configuration.** Log levels,
 worker counts and device selection are invocation details; putting them in the digest
-makes every run unique. Either keep them out of the hashed subtrees or move them to
-flags.
+makes every run unique. Annotate them with `DIRECTIVE`, list them in
+`FieldHash(..., exclude=(...))`, keep them out of the hashed subtrees, or move them
+to flags.
 
 **A refusal early is the point.** The first week of adoption surfaces refusals for
 things that "worked" before — an authored value in a derived field, a sweep handed to

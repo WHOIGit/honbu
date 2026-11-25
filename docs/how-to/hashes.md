@@ -12,19 +12,22 @@ loads rather than after the run directory is made.
 
 ## Choosing a form
 
-`FieldHash(name, include=(...))`
+`FieldHash(name, include=..., exclude=())`
 :   Digest over named subtrees of the configuration. This is the usual one: it is
-    what "the same configuration" means. Excluded markers are removed before
-    hashing, so it covers behavior rather than spelling.
+    what "the same configuration" means. Pass a mapping (`include={"train": (...),
+    "eval": (...)}`) to scope the digest per command, and `exclude=(...)` to prune
+    specific subfields inside included blocks. Marker-excluded fields are removed
+    automatically before hashing, so it covers behavior rather than spelling.
 
 `SourceHash(name, build=...)`
 :   Digest over a mapping you build. Use it when the thing you are identifying is
     not a subtree — a dataset's contents, a preprocessing recipe, an external
     version. Pass `reads_inputs=True` when building it requires reading files.
 
-`ByteHash(name, ...)`
-:   Digest over bytes you supply. Use it for a file whose contents are the identity —
-    a vocabulary, a label map, a serialized index.
+`ByteHash(name, locate=...)`
+:   Digest over the bytes of a file whose `Path` your `locate(inputs)` callable
+    returns (always deferred, `reads_inputs=True`). Use it for a checkpoint,
+    vocabulary, label map, or serialized index.
 
 `FannedHash(name, ...)`
 :   One entry per key of a mapping: a digest per split, per fold, per language. Each
