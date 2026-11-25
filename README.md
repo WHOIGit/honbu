@@ -32,6 +32,24 @@ pip install "honbu[optuna] @ git+https://github.com/WHOIGit/honbu.git"  # optuna
 
 ## Minimal shape
 
+A Hydra config packaged at `myproj/config_defaults/config.yaml` (Honbu fills in `runtime.run_id`, `runtime.config_hash`, and `outputs.dir` during resolution):
+
+```yaml
+defaults:
+  - _self_
+
+experiment:
+  name: baseline
+runtime:
+  seed: 42
+output_root: ./runs
+outputs:
+  dir_template: "{experiment.name}/{runtime.run_id}"
+epochs: 10
+```
+
+And the matching schema, spec, and run loop in Python:
+
 ```python
 from pathlib import Path
 from typing import Annotated
@@ -56,7 +74,7 @@ class RootConfig(StrictModel):
 PROJECT = ProjectSpec(
     root_type=RootConfig,
     compose_spec=ComposeSpec(packaged="myproj.config_defaults"),
-    hashes=HashRegistry([FieldHash("config_hash", include=("epochs",), version="1")], root_type=RootConfig),
+    hashes=HashRegistry([FieldHash("config_hash", include=("runtime", "epochs"), version="1")], root_type=RootConfig),
 )
 TRAIN = CommandSpec(
     name=("train",),
